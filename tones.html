@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Binaural Focus Synth — Ultra</title>
+<style>
+  :root { --bg:#0b1020; --fg:#e8f0ff; --muted:#93a4c8; --accent:#8ad; }
+  * { box-sizing:border-box }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         background:linear-gradient(180deg,#0b1020 0%,#0e1836 100%); color:var(--fg); }
+  header { padding:1.1rem 1.2rem; border-bottom:1px solid #1d2a4a; display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:1.1rem; margin:0; color:#cde0ff; letter-spacing:.02em; }
+  main { max-width:1100px; margin:0 auto; padding:1rem; display:grid; gap:1rem; }
+  .row { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:1rem; }
+  fieldset { border:1px solid #1d2a4a; border-radius:12px; padding:1rem; background:#0e1630aa; }
+  legend { padding:0 .4rem; color:#b8c9f2; }
+  label { display:flex; justify-content:space-between; align-items:center; font-size:.92rem; color:var(--muted); margin:.35rem 0; gap:.75rem; }
+  input[type="range"]{ width:55% } input,select{ background:#0e1c3d; border:1px solid #223461; color:var(--fg); border-radius:8px; padding:.35rem .5rem; }
+  button{ background:#152a5c; color:#e7f1ff; border:1px solid #274a9a; border-radius:10px; padding:.55rem .8rem; cursor:pointer }
+  button:hover{ filter:brightness(1.1) }
+  .pill { font-size:.8rem; color:#bcd3ff; background:#11224a; padding:.15rem .45rem; border-radius:999px; border:1px solid #274a9a; }
+  .muted{ color:#9fb1d9; font-size:.9rem }
+  .meter{ height:6px; background:#101b36; border:1px solid #243a6f; border-radius:999px; overflow:hidden }
+  .meter>div{ height:100%; width:0%; background:linear-gradient(90deg,#6ea8ff,#a1c2ff) }
+  footer{ text-align:center; padding:1rem; color:#8ea5d6; font-size:.85rem }
+  .split{ display:flex; gap:.5rem; align-items:center; flex-wrap:wrap }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Binaural Focus Synth — Ultra</h1>
+    <span class="pill">Tempo adjustable (default 120 BPM)</span>
+    <span class="pill">Bass hits every beat</span>
+    <div style="margin-left:auto; display:flex; gap:.5rem;">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="row">
+      <fieldset>
+        <legend>Tempo & Presets</legend>
+        <label>Tempo (BPM)
+          <input id="bpm" type="range" min="60" max="180" step="1" value="120" />
+        </label>
+        <div class="split" style="margin:.2rem 0 .5rem;">
+          <select id="preset">
+            <option value="calm">Calm 8 Hz / C major / soft pad</option>
+            <option value="steady">Steady 10 Hz / A minor / mellow</option>
+            <option value="alert">Alert 14 Hz / D dorian / brighter</option>
+            <option value="groove">Groove 12 Hz / G mixolydian / warm</option>
+          </select>
+          <button id="applyPreset">Apply</button>
+        </div>
+        <div class="muted">BPM adjusts bass hit rate. 120 BPM = 2 hits/sec.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Binaural Carrier</legend>
+        <label>Carrier freq (Hz)
+          <input id="carrier" type="range" min="100" max="600" step="1" value="220" />
+        </label>
+        <label>Beat freq (Hz) <span class="muted">(L/R difference)</span>
+          <input id="beat" type="range" min="1" max="20" step="0.5" value="10" />
+        </label>
+        <label>Carrier shape
+          <select id="carrierWave">
+            <option value="sine" selected>sine</option>
+            <option value="triangle">triangle</option>
+            <option value="square">square</option>
+            <option value="sawtooth">saw</option>
+          </select>
+        </label>
+        <label>Carrier level
+          <input id="carrierGain" type="range" min="0" max="1" step="0.01" value="0.22" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Harmony & Bass</legend>
+        <label>Key <select id="keySelect"></select></label>
+        <label>Scale
+          <select id="scaleSelect">
+            <option value="major" selected>Major</option>
+            <option value="minor">Minor</option>
+            <option value="dorian">Dorian</option>
+            <option value="mixolydian">Mixolydian</option>
+          </select>
+        </label>
+        <label>Octave (bass) <input id="bassOct" type="range" min="1" max="4" step="1" value="2" /></label>
+        <label>Bass timbre
+          <select id="bassWave">
+            <option value="sine">sine</option>
+            <option value="triangle" selected>triangle</option>
+            <option value="square">square</option>
+            <option value="sawtooth">saw</option>
+          </select>
+        </label>
+        <label>Bass level <input id="bassGain" type="range" min="0" max="1" step="0.01" value="0.35" /></label>
+        <label>Lowpass tone <input id="lpCutoff" type="range" min="80" max="1000" step="1" value="360" /></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Pad (Chord Wash) + LFO</legend>
+        <label>Enable pad <input id="padToggle" type="checkbox" checked /></label>
+        <label>Pad level <input id="padGain" type="range" min="0" max="1" step="0.01" value="0.28" /></label>
+        <label>Pad brightness (LP base cutoff)
+          <input id="padCutoff" type="range" min="200" max="4000" step="1" value="1200" />
+        </label>
+        <label>Pad shape
+          <select id="padWave">
+            <option value="sine">sine</option>
+            <option value="triangle" selected>triangle</option>
+            <option value="sawtooth">saw (airy)</option>
+          </select>
+        </label>
+        <hr style="border:none;border-top:1px solid #243a6f;margin:.6rem 0;">
+        <label>LFO rate (Hz) <input id="lfoRate" type="range" min="0.02" max="1.5" step="0.01" value="0.12" /></label>
+        <label>LFO depth (Hz added) <input id="lfoDepth" type="range" min="0" max="800" step="1" value="250" /></label>
+        <div class="muted">Pad LP filter is modulated: cutoff = base + LFO(depth).</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Arpeggio (In-Key, Upper Register)</legend>
+        <label>Enable arpeggio <input id="arpToggle" type="checkbox" checked /></label>
+        <label>Arp level <input id="arpGain" type="range" min="0" max="1" step="0.01" value="0.22" /></label>
+        <label>Arp density (notes/beat)
+          <input id="arpDensity" type="range" min="1" max="3" step="1" value="2" />
+        </label>
+        <label>Arp timbre
+          <select id="arpWave">
+            <option value="sine">sine</option>
+            <option value="triangle" selected>triangle</option>
+            <option value="square">square</option>
+            <option value="sawtooth">saw</option>
+          </select>
+        </label>
+        <div class="muted">Chooses diatonic tones, avoids bass pitch-class, stays light.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Metronome & Echo</legend>
+        <label>Enable click <input id="clickToggle" type="checkbox" /></label>
+        <label>Click level <input id="clickGain" type="range" min="0" max="1" step="0.01" value="0.25" /></label>
+        <hr style="border:none;border-top:1px solid #243a6f;margin:.6rem 0;">
+        <label>Echo time (s) <input id="echoTime" type="range" min="0.08" max="0.6" step="0.01" value="0.24" /></label>
+        <label>Echo feedback <input id="echoFB" type="range" min="0" max="0.95" step="0.01" value="0.35" /></label>
+        <label>Echo tone (LP Hz) <input id="echoLP" type="range" min="800" max="6000" step="1" value="3000" /></label>
+        <label>Echo send — Pad <input id="echoSendPad" type="range" min="0" max="1" step="0.01" value="0.35" /></label>
+        <label>Echo send — Arp <input id="echoSendArp" type="range" min="0" max="1" step="0.01" value="0.55" /></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>FX & Master</legend>
+        <label>Soft compression <input id="compToggle" type="checkbox" checked /></label>
+        <label>Stereo width <input id="stereoWidth" type="range" min="0" max="1" step="0.01" value="0.8" /></label>
+        <label>Master volume <input id="master" type="range" min="0" max="1" step="0.01" value="0.7" /></label>
+        <div class="meter" title="output activity"><div id="meterBar"></div></div>
+      </fieldset>
+    </div>
+
+    <section class="muted">
+      <strong>What it’s doing:</strong> binaural carrier sets the beat frequency; a harmony engine picks diatonic
+      progressions; bass “hits” every beat; a pad sustains triads with a slow filter LFO; an arpeggio dances in key;
+      a simple echo adds space. Everything is scheduled ahead for tight timing. Listen comfortably; no medical claims.
+    </section>
+  </main>
+
+  <footer>Made for deep focus & flow.</footer>
+
+<script>
+(() => {
+  // ==== Helpers (music) ====
+  const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const KEYS = Object.fromEntries(NOTE_NAMES.map((n,i)=>[n,i]));
+  const SCALES = {
+    major:[0,2,4,5,7,9,11],
+    minor:[0,2,3,5,7,8,10],
+    dorian:[0,2,3,5,7,9,10],
+    mixolydian:[0,2,4,5,7,9,10],
+  };
+  const TRIADS = [ [0,2,4], [1,3,5], [2,4,6], [3,5,0], [4,6,1], [5,0,2], [6,1,3] ];
+  const PROG = { 0:[5,3,4,6], 1:[4,0,6], 2:[5,3,0], 3:[4,0,1], 4:[0,5], 5:[3,4,0], 6:[4,0] };
+  function midiFromKeyScaleDegree(root, scale, deg, octave=4){
+    const semis = (root + SCALES[scale][deg%7]) % 12;
+    return 12*(octave+1) + semis; // C4=60
+  }
+  function midiToFreq(m){ return 440 * Math.pow(2,(m-69)/12); }
+  function clamp(v,l,h){ return Math.max(l, Math.min(h,v)); }
+  function choice(a){ return a[(Math.random()*a.length)|0]; }
+
+  // ==== DOM ====
+  const $ = sel => document.querySelector(sel);
+  const els = {
+    start:$('#startBtn'), stop:$('#stopBtn'),
+    bpm:$('#bpm'),
+    preset:$('#preset'), applyPreset:$('#applyPreset'),
+    carrier:$('#carrier'), beat:$('#beat'), carrierWave:$('#carrierWave'), carrierGain:$('#carrierGain'),
+    keySelect:$('#keySelect'), scaleSelect:$('#scaleSelect'), bassOct:$('#bassOct'),
+    bassWave:$('#bassWave'), bassGain:$('#bassGain'), lpCutoff:$('#lpCutoff'),
+    padToggle:$('#padToggle'), padGain:$('#padGain'), padCutoff:$('#padCutoff'), padWave:$('#padWave'),
+    lfoRate:$('#lfoRate'), lfoDepth:$('#lfoDepth'),
+    arpToggle:$('#arpToggle'), arpGain:$('#arpGain'), arpDensity:$('#arpDensity'), arpWave:$('#arpWave'),
+    clickToggle:$('#clickToggle'), clickGain:$('#clickGain'),
+    echoTime:$('#echoTime'), echoFB:$('#echoFB'), echoLP:$('#echoLP'),
+    echoSendPad:$('#echoSendPad'), echoSendArp:$('#echoSendArp'),
+    compToggle:$('#compToggle'), stereoWidth:$('#stereoWidth'), master:$('#master'),
+    meterBar:$('#meterBar')
+  };
+  NOTE_NAMES.forEach(n=>{ const o=document.createElement('option'); o.value=n; o.textContent=n; if(n==="C") o.selected=true; els.keySelect.appendChild(o); });
+
+  // ==== Audio Graph ====
+  let ctx, analyser, masterGain, compNode;
+  let pannerL, pannerR, carrierGain, carrierLeft, carrierRight;
+  let bassLP, bassBus;
+  let padLP, padGain, padBus, padOscs=[];
+  let lfoOsc, lfoGain; // mod padLP.frequency
+  let arpBus;
+  let clickBus;
+
+  // Echo send/return
+  let echoSendPad, echoSendArp, echoDelay, echoFB, echoLPF, echoReturn;
+
+  // Helper to build pad voices on-demand
+  function buildPadVoicesIfNeeded() {
+    // Only build if missing
+    if (!padOscs || padOscs.length !== 3) {
+      // stop any leftovers safely
+      try { padOscs?.forEach(({osc}) => osc.stop()); } catch {}
+      padOscs = [];
+      for (let i = 0; i < 3; i++) {
+        const o = ctx.createOscillator();
+        o.type = els.padWave.value;
+        o.detune.value = (i - 1) * 4; // -4,0,+4 cents
+        const e = ctx.createGain();
+        e.gain.value = 0.0001;
+        o.connect(e).connect(padLP);
+        padOscs.push({ osc: o, env: e });
+      }
+    }
+  }
+
+  // ==== Transport / Scheduler ====
+  let BPM = 120;
+  let BEAT_SEC = 60 / BPM;
+  let nextNoteTime = 0;
+  let currentBeat = 0;
+  const LOOKAHEAD = 25/1000;  // 25 ms
+  const SCHEDULE_AHEAD = 0.15; // s
+  let timerID = null;
+
+  // Harmony state
+  let keyRoot = KEYS["C"];
+  let scaleName = "major";
+  let currentChord = 0;
+  let lastBassMidi = 40;
+  let lastBassPitchClass = lastBassMidi % 12;
+
+  function setBpm(val){
+    BPM = clamp(parseInt(val,10), 40, 240);
+    BEAT_SEC = 60 / BPM;
+  }
+
+  function initAudio(){
+    if (ctx) return;
+    ctx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:"interactive"});
+
+    analyser = ctx.createAnalyser(); analyser.fftSize = 512;
+    masterGain = ctx.createGain(); masterGain.gain.value = parseFloat(els.master.value);
+    compNode = ctx.createDynamicsCompressor();
+    compNode.threshold.value = -18;
+    compNode.knee.value = 24;
+    compNode.ratio.value = 2.5;
+    compNode.attack.value = 0.005;
+    compNode.release.value = 0.15;
+
+    const mixBus = ctx.createGain();
+    const wireMaster = () => {
+      try{ mixBus.disconnect(); }catch{}
+      try{ compNode.disconnect(); }catch{}
+      if (els.compToggle.checked) mixBus.connect(compNode).connect(masterGain).connect(analyser).connect(ctx.destination);
+      else mixBus.connect(masterGain).connect(analyser).connect(ctx.destination);
+    };
+    wireMaster();
+    initAudio.wireMaster = wireMaster;
+
+    // Stereo panners for binaural
+    pannerL = ctx.createStereoPanner(); pannerR = ctx.createStereoPanner();
+    setStereoWidth(parseFloat(els.stereoWidth.value));
+
+    // Carrier
+    carrierGain = ctx.createGain(); carrierGain.gain.value = parseFloat(els.carrierGain.value);
+    carrierLeft = ctx.createOscillator(); carrierRight = ctx.createOscillator();
+    carrierLeft.type = els.carrierWave.value; carrierRight.type = els.carrierWave.value;
+    setCarrierFreqs();
+    const gainL = ctx.createGain(), gainR = ctx.createGain(); gainL.gain.value=1; gainR.gain.value=1;
+    carrierLeft.connect(gainL).connect(pannerL).connect(carrierGain).connect(mixBus);
+    carrierRight.connect(gainR).connect(pannerR).connect(carrierGain).connect(mixBus);
+
+    // Bass
+    bassLP = ctx.createBiquadFilter(); bassLP.type="lowpass"; bassLP.frequency.value = parseFloat(els.lpCutoff.value);
+    bassBus = ctx.createGain(); bassBus.gain.value = parseFloat(els.bassGain.value);
+    bassLP.connect(bassBus).connect(mixBus);
+
+    // Pad + LFO
+    padLP = ctx.createBiquadFilter(); padLP.type="lowpass"; padLP.frequency.value = parseFloat(els.padCutoff.value);
+    padGain = ctx.createGain(); padGain.gain.value = parseFloat(els.padGain.value);
+    padBus = ctx.createGain(); padBus.gain.value = 1;
+    padLP.connect(padGain).connect(padBus).connect(mixBus);
+
+    buildPadVoicesIfNeeded();
+    // LFO -> padLP.frequency (summed with base)
+    lfoOsc = ctx.createOscillator(); lfoOsc.type="sine"; lfoOsc.frequency.value = parseFloat(els.lfoRate.value);
+    lfoGain = ctx.createGain(); lfoGain.gain.value = parseFloat(els.lfoDepth.value);
+    lfoOsc.connect(lfoGain).connect(padLP.frequency);
+
+    // Arpeggio
+    arpBus = ctx.createGain(); arpBus.gain.value = parseFloat(els.arpGain.value);
+    arpBus.connect(mixBus);
+
+    // Metronome
+    clickBus = ctx.createGain(); clickBus.gain.value = parseFloat(els.clickGain.value);
+    clickBus.connect(mixBus);
+
+    // Echo network (simple feedback delay with tone)
+    echoSendPad = ctx.createGain(); echoSendArp = ctx.createGain();
+    echoDelay = ctx.createDelay(1.0); echoDelay.delayTime.value = parseFloat(els.echoTime.value);
+    echoFB = ctx.createGain(); echoFB.gain.value = parseFloat(els.echoFB.value);
+    echoLPF = ctx.createBiquadFilter(); echoLPF.type="lowpass"; echoLPF.frequency.value = parseFloat(els.echoLP.value);
+    echoReturn = ctx.createGain(); // returns to master mix
+    echoSendPad.gain.value = parseFloat(els.echoSendPad.value);
+    echoSendArp.gain.value = parseFloat(els.echoSendArp.value);
+
+    // Route sends
+    padBus.connect(echoSendPad);
+    arpBus.connect(echoSendArp);
+    // Feedback loop: sends -> delay -> LPF -> feedback + return
+    const echoMix = ctx.createGain(); echoMix.gain.value = 1.0;
+    echoSendPad.connect(echoDelay); echoSendArp.connect(echoDelay);
+    echoDelay.connect(echoLPF).connect(echoMix).connect(echoReturn).connect(mixBus);
+    echoLPF.connect(echoFB).connect(echoDelay); // feedback loop
+
+    // Start continuous sources
+    const now = ctx.currentTime + 0.02;
+    carrierLeft.start(now); carrierRight.start(now);
+    buildPadVoicesIfNeeded();
+    padOscs.forEach(({osc}) => osc.start(now));
+    lfoOsc.start(now);
+
+    // Meter
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    (function meterLoop(){
+      if (!ctx) return;
+      analyser.getByteTimeDomainData(data);
+      let sum=0; for (let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum+=v*v; }
+      const rms = Math.sqrt(sum/data.length);
+      els.meterBar.style.width = (clamp(rms*180,0,100)).toFixed(1) + "%";
+      requestAnimationFrame(meterLoop);
+    })();
+  }
+
+  function setCarrierFreqs(){
+    if (!ctx) return;
+    if (!carrierLeft || !carrierRight) return; // guard if not built yet
+    const base = parseFloat(els.carrier.value), diff = parseFloat(els.beat.value);
+    const t = ctx.currentTime;
+    try {
+      carrierLeft.frequency.setValueAtTime(base - diff/2, t);
+      carrierRight.frequency.setValueAtTime(base + diff/2, t);
+    } catch(e) {
+      // If oscillators haven't started yet (or were stopped), just bail gracefully.
+    }
+  }
+  function setStereoWidth(w){ if(ctx){ pannerL.pan.value=-clamp(w,0,1); pannerR.pan.value=+clamp(w,0,1);} }
+
+  // ==== Musical choices ====
+  function nextChordIndex(prev){
+    const c = PROG[prev] || PROG[0];
+    const sorted = c.slice().sort((a,b)=>Math.abs(a-prev)-Math.abs(b-prev));
+    return Math.random()<0.7 ? sorted[0] : choice(c);
+  }
+  function pickBassMidi(chordIndex){
+    const triad = TRIADS[chordIndex];
+    const pick = Math.random()<0.62 ? triad[0] : (Math.random()<0.8 ? triad[2] : triad[1]);
+    const octave = parseInt(els.bassOct.value,10);
+    let m = midiFromKeyScaleDegree(keyRoot, scaleName, pick, octave+1);
+    while (m > 57) m -= 12;
+    while (m < 40) m += 12;
+    if (Math.abs(m-lastBassMidi) > 7){ m += (m>lastBassMidi)?-12:+12; }
+    lastBassMidi = m; lastBassPitchClass = m % 12;
+    return m;
+  }
+
+  // pick an arpeggio MIDI: diatonic, avoid current bass pitch-class, upper register
+  function pickArpMidi(chordIndex){
+    const degrees = [0,2,4,6,1,3,5]; // bias toward chord tones then color
+    let deg = choice(degrees);
+    // avoid sharing pitch class with bass
+    let tries = 0;
+    while ( ((keyRoot + SCALES[scaleName][deg%7]) % 12) === lastBassPitchClass && tries++ < 6 ){
+      deg = (deg + 2) % 7;
+    }
+    let m = midiFromKeyScaleDegree(keyRoot, scaleName, deg, 5); // upper register
+    if (Math.random()<0.3) m += 12; // occasional sparkle
+    return m;
+  }
+
+  // ==== Scheduling voices ====
+  function scheduleBass(t, midi){
+    const osc = ctx.createOscillator(); const env = ctx.createGain();
+    osc.type = els.bassWave.value; osc.frequency.setValueAtTime(midiToFreq(midi), t);
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.linearRampToValueAtTime(1.0, t+0.015);
+    env.gain.exponentialRampToValueAtTime(0.25, t+0.12);
+    env.gain.exponentialRampToValueAtTime(0.0001, t+0.32);
+    osc.connect(env).connect(bassLP);
+    osc.start(t); osc.stop(t+0.35);
+  }
+
+  function schedulePadChord(t, chordIndex){
+    if (!els.padToggle.checked || !ctx) return;
+
+    // Ensure pad voices exist if the scheduler fires early
+    if (!padOscs || padOscs.length !== 3) {
+      buildPadVoicesIfNeeded();
+      // If still not ready (e.g., audio context not started), bail out
+      if (!padOscs || padOscs.length !== 3) return;
+    }
+
+    const triad = TRIADS[chordIndex].map(d => midiFromKeyScaleDegree(keyRoot, scaleName, d, 3));
+    for (let i = 0; i < padOscs.length; i++) {
+      const hz = Math.max(1, midiToFreq(triad[i]));
+      const v = padOscs[i];
+      if (!v?.osc || !v?.env) continue;
+      try {
+        v.osc.frequency.cancelScheduledValues(t);
+        v.osc.frequency.exponentialRampToValueAtTime(hz, t + 0.12);
+        v.env.gain.cancelScheduledValues(t);
+        v.env.gain.setTargetAtTime(0.6, t, 0.15);
+      } catch {}
+    }
+  }
+
+  function scheduleArp(t){
+    if (!els.arpToggle.checked) return;
+    const osc = ctx.createOscillator(); const env = ctx.createGain();
+    const m = pickArpMidi(currentChord);
+    osc.type = els.arpWave.value; osc.frequency.setValueAtTime(midiToFreq(m), t);
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.linearRampToValueAtTime(0.9, t+0.01);
+    env.gain.exponentialRampToValueAtTime(0.0001, t+0.18);
+    osc.connect(env).connect(arpBus);
+    osc.start(t); osc.stop(t+0.2);
+  }
+
+  function scheduleClick(t){
+    if (!els.clickToggle.checked) return;
+    const o = ctx.createOscillator(); const e = ctx.createGain();
+    const barPos = currentBeat % 16;
+    const freq = (barPos===0) ? 2200 : 1600;
+    const peak = (barPos===0) ? 0.9 : 0.6;
+    o.type="sine"; o.frequency.setValueAtTime(freq, t);
+    e.gain.setValueAtTime(0.0001, t);
+    e.gain.linearRampToValueAtTime(peak, t+0.005);
+    e.gain.exponentialRampToValueAtTime(0.0001, t+0.06);
+    o.connect(e).connect(clickBus);
+    o.start(t); o.stop(t+0.08);
+  }
+
+  function scheduler(){
+    if (!ctx) return;
+    while (nextNoteTime < ctx.currentTime + SCHEDULE_AHEAD){
+      const beatInBar = currentBeat % 16;
+      if (beatInBar === 0 || beatInBar === 8 || (beatInBar===4 && Math.random()<0.5) || (beatInBar===12 && Math.random()<0.5)){
+        currentChord = nextChordIndex(currentChord);
+        schedulePadChord(nextNoteTime, currentChord);
+      }
+
+      // Bass each beat
+      const midi = pickBassMidi(currentChord);
+      scheduleBass(nextNoteTime, midi);
+
+      // Arp density: 1/beat, 2/beat (eighths), or 3/beat (triplet-ish)
+      const density = parseInt(els.arpDensity.value,10);
+      for(let i=0;i<density;i++){
+        scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98); // slight pre-bias feels snappy
+      }
+
+      scheduleClick(nextNoteTime);
+
+      nextNoteTime += BEAT_SEC;
+      currentBeat++;
+    }
+  }
+
+  // ==== Transport ====
+  function start(){
+    if (!ctx) initAudio();
+    nextNoteTime = ctx.currentTime + 0.05;
+    currentBeat = 0;
+    timerID = setInterval(()=>scheduler(), LOOKAHEAD*1000);
+    els.start.disabled = true; els.stop.disabled = false;
+  }
+  function stop(){
+    if (!ctx) return;
+    clearInterval(timerID); timerID = null;
+    try { carrierLeft?.stop(); carrierRight?.stop(); } catch {}
+    try { padOscs?.forEach(({osc}) => osc.stop()); } catch {}
+    try { lfoOsc?.stop(); } catch {}
+    ctx.close().catch(()=>{}).finally(()=>{
+      ctx = null;
+      // Keep the array but empty it; it will be rebuilt on next initAudio()
+      padOscs = [];
+      els.start.disabled = false;
+      els.stop.disabled = true;
+      els.meterBar.style.width = "0%";
+    });
+  }
+
+  // ==== Presets ====
+  const PRESETS = {
+    calm: ({key="C", scale="major", bpm=120, carrier=200, beat=8, carGain=0.22, pad=0.28, padCut=1100, lfoR=0.10, lfoD=220, bass=0.33, lp=340, echoT=0.22, echoF=0.35, echoLP=2800, sendPad=0.35, sendArp=0.55}) =>
+      ({key,scale,bpm,carrier,beat,carGain,pad,padCut,lfoR,lfoD,bass,lp,echoT,echoF,echoLP,sendPad,sendArp}),
+    steady: ({key="A", scale="minor", bpm=116, carrier=220, beat=10, carGain=0.24, pad=0.25, padCut=1200, lfoR=0.14, lfoD=260, bass=0.35, lp=360, echoT=0.24, echoF=0.38, echoLP=3000, sendPad=0.32, sendArp=0.52}) =>
+      ({key,scale,bpm,carrier,beat,carGain,pad,padCut,lfoR,lfoD,bass,lp,echoT,echoF,echoLP,sendPad,sendArp}),
+    alert: ({key="D", scale="dorian", bpm=126, carrier=260, beat=14, carGain=0.20, pad=0.22, padCut=1600, lfoR=0.25, lfoD=180, bass=0.30, lp=420, echoT=0.18, echoF=0.28, echoLP=3600, sendPad=0.28, sendArp=0.60}) =>
+      ({key,scale,bpm,carrier,beat,carGain,pad,padCut,lfoR,lfoD,bass,lp,echoT,echoF,echoLP,sendPad,sendArp}),
+    groove: ({key="G", scale="mixolydian", bpm=120, carrier=230, beat=12, carGain=0.25, pad=0.30, padCut=1500, lfoR=0.18, lfoD=240, bass=0.38, lp=380, echoT=0.26, echoF=0.40, echoLP=3200, sendPad=0.40, sendArp=0.58}) =>
+      ({key,scale,bpm,carrier,beat,carGain,pad,padCut,lfoR,lfoD,bass,lp,echoT,echoF,echoLP,sendPad,sendArp}),
+  };
+
+  function applyPreset(name){
+    const p = PRESETS[name]({});
+    // Always set UI values
+    els.keySelect.value = p.key; keyRoot = KEYS[p.key];
+    els.scaleSelect.value = p.scale; scaleName = p.scale;
+    els.bpm.value = p.bpm; setBpm(p.bpm);
+    els.carrier.value = p.carrier; els.beat.value = p.beat;
+    els.carrierGain.value = p.carGain; els.padGain.value = p.pad;
+    els.padCutoff.value = p.padCut; els.lfoRate.value = p.lfoR; els.lfoDepth.value = p.lfoD;
+    els.bassGain.value = p.bass; els.lpCutoff.value = p.lp;
+    els.echoTime.value = p.echoT; els.echoFB.value = p.echoF; els.echoLP.value = p.echoLP;
+    els.echoSendPad.value = p.sendPad; els.echoSendArp.value = p.sendArp;
+
+    // Only touch AudioNodes if we're running and nodes exist
+    if (ctx) {
+      if (carrierLeft && carrierRight) setCarrierFreqs();
+      carrierGain?.gain?.setValueAtTime(p.carGain, ctx.currentTime);
+      padGain?.gain?.setValueAtTime(p.pad, ctx.currentTime);
+      padLP?.frequency?.setValueAtTime(p.padCut, ctx.currentTime);
+      lfoOsc?.frequency?.setValueAtTime(p.lfoR, ctx.currentTime);
+      lfoGain?.gain?.setValueAtTime(p.lfoD, ctx.currentTime);
+      bassBus?.gain?.setValueAtTime(p.bass, ctx.currentTime);
+      bassLP?.frequency?.setValueAtTime(p.lp, ctx.currentTime);
+      echoDelay?.delayTime?.setValueAtTime(p.echoT, ctx.currentTime);
+      echoFB?.gain?.setValueAtTime(p.echoF, ctx.currentTime);
+      echoLPF?.frequency?.setValueAtTime(p.echoLP, ctx.currentTime);
+      echoSendPad?.gain?.setValueAtTime(p.sendPad, ctx.currentTime);
+      echoSendArp?.gain?.setValueAtTime(p.sendArp, ctx.currentTime);
+    }
+  }
+
+  // ==== UI bindings ====
+  els.start.addEventListener('click', start);
+  els.stop.addEventListener('click', stop);
+  els.applyPreset.addEventListener('click', ()=>applyPreset(els.preset.value));
+
+  els.bpm.addEventListener('input', e=> setBpm(e.target.value));
+
+  els.carrier.addEventListener('input', setCarrierFreqs);
+  els.beat.addEventListener('input', setCarrierFreqs);
+  els.carrierWave.addEventListener('change', ()=>{ if(ctx){ carrierLeft.type=els.carrierWave.value; carrierRight.type=els.carrierWave.value; }});
+  els.carrierGain.addEventListener('input', ()=>{ if(ctx) carrierGain.gain.setValueAtTime(parseFloat(els.carrierGain.value), ctx.currentTime); });
+
+  els.keySelect.addEventListener('change', e=> keyRoot = KEYS[e.target.value]);
+  els.scaleSelect.addEventListener('change', e=> scaleName = e.target.value);
+  els.bassGain.addEventListener('input', ()=>{ if(ctx) bassBus.gain.setValueAtTime(parseFloat(els.bassGain.value), ctx.currentTime); });
+  els.lpCutoff.addEventListener('input', ()=>{ if(ctx) bassLP.frequency.setValueAtTime(parseFloat(els.lpCutoff.value), ctx.currentTime); });
+  els.bassWave.addEventListener('change', ()=>{}); els.bassOct.addEventListener('input', ()=>{});
+
+  els.padToggle.addEventListener('change', ()=>{
+    if (!ctx) return;
+    const t = ctx.currentTime; const on = els.padToggle.checked;
+    padOscs.forEach(({env})=>{
+      env.gain.cancelScheduledValues(t);
+      env.gain.setTargetAtTime(on?0.6:0.0001, t, 0.12);
+    });
+  });
+  els.padGain.addEventListener('input', ()=>{ if(ctx) padGain.gain.setValueAtTime(parseFloat(els.padGain.value), ctx.currentTime); });
+  els.padCutoff.addEventListener('input', ()=>{ if(ctx) padLP.frequency.setValueAtTime(parseFloat(els.padCutoff.value), ctx.currentTime); });
+  els.padWave.addEventListener('change', ()=>{
+    if (!ctx) return;
+    if (!padOscs || padOscs.length !== 3) buildPadVoicesIfNeeded();
+    padOscs.forEach(({osc}) => { try { osc.type = els.padWave.value; } catch {} });
+  });
+
+  els.lfoRate.addEventListener('input', ()=>{ if(ctx) lfoOsc.frequency.setValueAtTime(parseFloat(els.lfoRate.value), ctx.currentTime); });
+  els.lfoDepth.addEventListener('input', ()=>{ if(ctx) lfoGain.gain.setValueAtTime(parseFloat(els.lfoDepth.value), ctx.currentTime); });
+
+  els.arpToggle.addEventListener('change', ()=>{});
+  els.arpGain.addEventListener('input', ()=>{ if(ctx) arpBus.gain.setValueAtTime(parseFloat(els.arpGain.value), ctx.currentTime); });
+  els.arpDensity.addEventListener('input', ()=>{});
+  els.arpWave.addEventListener('change', ()=>{});
+
+  els.clickToggle.addEventListener('change', ()=>{});
+  els.clickGain.addEventListener('input', ()=>{ if(ctx) clickBus.gain.setValueAtTime(parseFloat(els.clickGain.value), ctx.currentTime); });
+
+  els.echoTime.addEventListener('input', ()=>{ if(ctx) echoDelay.delayTime.setValueAtTime(parseFloat(els.echoTime.value), ctx.currentTime); });
+  els.echoFB.addEventListener('input', ()=>{ if(ctx) echoFB.gain.setValueAtTime(parseFloat(els.echoFB.value), ctx.currentTime); });
+  els.echoLP.addEventListener('input', ()=>{ if(ctx) echoLPF.frequency.setValueAtTime(parseFloat(els.echoLP.value), ctx.currentTime); });
+  els.echoSendPad.addEventListener('input', ()=>{ if(ctx) echoSendPad.gain.setValueAtTime(parseFloat(els.echoSendPad.value), ctx.currentTime); });
+  els.echoSendArp.addEventListener('input', ()=>{ if(ctx) echoSendArp.gain.setValueAtTime(parseFloat(els.echoSendArp.value), ctx.currentTime); });
+
+  els.compToggle.addEventListener('change', ()=>{ if(ctx && initAudio.wireMaster) initAudio.wireMaster(); });
+  els.stereoWidth.addEventListener('input', ()=> setStereoWidth(parseFloat(els.stereoWidth.value)));
+  els.master.addEventListener('input', ()=>{ if(ctx) masterGain.gain.setValueAtTime(parseFloat(els.master.value), ctx.currentTime); });
+
+  window.addEventListener('keydown', e=>{
+    if (e.key===' ') { e.preventDefault(); if (els.start.disabled) stop(); else start(); }
+  });
+
+  // Default preset
+  applyPreset('calm');
+
+})();
+</script>
+</body>
+</html>
