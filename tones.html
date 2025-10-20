@@ -59,11 +59,21 @@
 
       <fieldset>
         <legend>Binaural Carrier</legend>
+        <label>Binaural preset
+          <select id="binauralPreset">
+            <option value="custom" selected>Custom</option>
+            <option value="delta">Deep Sleep — 2 Hz (delta)</option>
+            <option value="theta">Meditation — 6 Hz (theta)</option>
+            <option value="alpha">Relaxation — 10 Hz (alpha)</option>
+            <option value="beta">Focus — 18 Hz (beta)</option>
+            <option value="gamma">Clarity — 40 Hz (gamma)</option>
+          </select>
+        </label>
         <label>Carrier freq (Hz)
           <input id="carrier" type="range" min="100" max="600" step="1" value="220" />
         </label>
         <label>Beat freq (Hz) <span class="muted">(L/R difference)</span>
-          <input id="beat" type="range" min="1" max="20" step="0.5" value="10" />
+          <input id="beat" type="range" min="1" max="40" step="0.5" value="10" />
         </label>
         <label>Carrier shape
           <select id="carrierWave">
@@ -141,6 +151,23 @@
       </fieldset>
 
       <fieldset>
+        <legend>Drum Engine (Quasi-Random)</legend>
+        <label>Enable drums <input id="drumToggle" type="checkbox" checked /></label>
+        <label>Drum level <input id="drumLevel" type="range" min="0" max="1" step="0.01" value="0.4" /></label>
+        <label>Pattern density <input id="drumDensity" type="range" min="0" max="1" step="0.01" value="0.32" /></label>
+        <label>Fill probability <input id="drumFill" type="range" min="0" max="1" step="0.01" value="0.2" /></label>
+        <label>Humanization <input id="drumHuman" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+        <label>Pattern length
+          <select id="drumLength">
+            <option value="8">1 bar (8 steps)</option>
+            <option value="16" selected>2 bars (16 steps)</option>
+            <option value="32">4 bars (32 steps)</option>
+          </select>
+        </label>
+        <div class="muted">Generates kick/snare/hat grids via van der Corput sequences with Perlin humanization.</div>
+      </fieldset>
+
+      <fieldset>
         <legend>Metronome & Echo</legend>
         <label>Enable click <input id="clickToggle" type="checkbox" /></label>
         <label>Click level <input id="clickGain" type="range" min="0" max="1" step="0.01" value="0.25" /></label>
@@ -189,6 +216,17 @@
   }
   function midiToFreq(m){ return 440 * Math.pow(2,(m-69)/12); }
   function clamp(v,l,h){ return Math.max(l, Math.min(h,v)); }
+  function vanDerCorput(n, base=2){
+    let v = 0;
+    let denom = 1;
+    let i = n;
+    while (i > 0){
+      denom *= base;
+      v += (i % base) / denom;
+      i = Math.floor(i / base);
+    }
+    return v;
+  }
 
   // ==== Smooth noise utilities ====
   function mulberry32(seed){
@@ -251,6 +289,8 @@
     arp: Math.random() * 256,
     timbre: Math.random() * 256,
     space: Math.random() * 256,
+    drums: Math.random() * 256,
+    drumVel: Math.random() * 256,
   };
   const noise01 = (x,y,z) => (perlinNoise(x,y,z) + 1) * 0.5;
   function streamNoise(channel, beat, rate, y=0.4, z=0.7){
@@ -263,12 +303,15 @@
     start:$('#startBtn'), stop:$('#stopBtn'),
     bpm:$('#bpm'),
     preset:$('#preset'), applyPreset:$('#applyPreset'),
+    binauralPreset:$('#binauralPreset'),
     carrier:$('#carrier'), beat:$('#beat'), carrierWave:$('#carrierWave'), carrierGain:$('#carrierGain'),
     keySelect:$('#keySelect'), scaleSelect:$('#scaleSelect'), bassOct:$('#bassOct'),
     bassWave:$('#bassWave'), bassGain:$('#bassGain'), lpCutoff:$('#lpCutoff'),
     padToggle:$('#padToggle'), padGain:$('#padGain'), padCutoff:$('#padCutoff'), padWave:$('#padWave'),
     lfoRate:$('#lfoRate'), lfoDepth:$('#lfoDepth'),
     arpToggle:$('#arpToggle'), arpGain:$('#arpGain'), arpDensity:$('#arpDensity'), arpWave:$('#arpWave'),
+    drumToggle:$('#drumToggle'), drumLevel:$('#drumLevel'), drumDensity:$('#drumDensity'),
+    drumFill:$('#drumFill'), drumHuman:$('#drumHuman'), drumLength:$('#drumLength'),
     clickToggle:$('#clickToggle'), clickGain:$('#clickGain'),
     echoTime:$('#echoTime'), echoFB:$('#echoFB'), echoLP:$('#echoLP'),
     echoSendPad:$('#echoSendPad'), echoSendArp:$('#echoSendArp'),
@@ -284,10 +327,13 @@
   let padLP, padGain, padBus, padOscs=[];
   let lfoOsc, lfoGain; // mod padLP.frequency
   let arpBus;
+  let drumBus;
   let clickBus;
 
   // Echo send/return
   let echoSendPad, echoSendArp, echoDelay, echoFB, echoLPF, echoReturn;
+
+  let noiseBuffer;
 
   // Helper to build pad voices on-demand
   function buildPadVoicesIfNeeded() {
@@ -325,6 +371,13 @@
   let lastBassPitchClass = lastBassMidi % 12;
   let lastArpMidi = null;
   let lastArpDegree = 0;
+
+  const DRUM_STEPS_PER_BEAT = 4;
+  let drumPatterns = null;
+  let drumPatternSteps = 16;
+  let drumPatternNeedsUpdate = true;
+  let drumStepCounter = 0;
+  let drumCycleSeed = 0;
 
   function setBpm(val){
     BPM = clamp(parseInt(val,10), 40, 240);
@@ -387,6 +440,10 @@
     // Arpeggio
     arpBus = ctx.createGain(); arpBus.gain.value = parseFloat(els.arpGain.value);
     arpBus.connect(mixBus);
+
+    // Drums
+    drumBus = ctx.createGain(); drumBus.gain.value = parseFloat(els.drumLevel.value);
+    drumBus.connect(mixBus);
 
     // Metronome
     clickBus = ctx.createGain(); clickBus.gain.value = parseFloat(els.clickGain.value);
@@ -525,6 +582,184 @@
     }
   }
 
+  function ensureNoiseBuffer(){
+    if (!ctx) return null;
+    if (!noiseBuffer){
+      const length = Math.max(1, Math.floor(ctx.sampleRate * 0.6));
+      const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+      noiseBuffer = buffer;
+    }
+    return noiseBuffer;
+  }
+
+  function humanizeHit(time, velocity, step, lane){
+    if (!ctx) return { time, velocity };
+    const human = parseFloat(els.drumHuman.value);
+    if (!human) return { time, velocity };
+    const spread = human * 0.04;
+    const swing = (streamNoise('drums', step, 0.19, lane === 'hat' ? 0.82 : lane === 'snare' ? 0.44 : 0.26, lane === 'kick' ? 0.31 : 0.67) - 0.5) * spread;
+    const velDelta = (streamNoise('drumVel', step, 0.27, lane === 'hat' ? 0.55 : lane === 'snare' ? 0.72 : 0.34, lane === 'kick' ? 0.61 : 0.83) - 0.5) * (human * 0.5);
+    const t = Math.max(time + swing, ctx.currentTime + 0.0003);
+    const v = clamp(velocity + velDelta, 0.05, 1.0);
+    return { time: t, velocity: v };
+  }
+
+  function scheduleKickHit(time, velocity){
+    if (!ctx || !drumBus) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    const startFreq = 90 + velocity * 50;
+    osc.frequency.setValueAtTime(startFreq, time);
+    osc.frequency.exponentialRampToValueAtTime(45, time + 0.12);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.linearRampToValueAtTime(0.85 * velocity, time + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.3);
+    osc.connect(gain).connect(drumBus);
+    osc.start(time);
+    osc.stop(time + 0.35);
+  }
+
+  function scheduleSnareHit(time, velocity){
+    if (!ctx || !drumBus) return;
+    const noise = ctx.createBufferSource();
+    noise.buffer = ensureNoiseBuffer();
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 1700 + velocity * 900;
+    filter.Q.value = 0.8 + velocity * 0.6;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, time);
+    env.gain.linearRampToValueAtTime(0.8 * velocity, time + 0.005);
+    env.gain.exponentialRampToValueAtTime(0.0001, time + 0.24);
+    noise.connect(filter).connect(env).connect(drumBus);
+    noise.start(time);
+    noise.stop(time + 0.26);
+
+    const tone = ctx.createOscillator();
+    tone.type = 'triangle';
+    tone.frequency.setValueAtTime(180 + velocity * 80, time);
+    const toneGain = ctx.createGain();
+    toneGain.gain.setValueAtTime(0.0001, time);
+    toneGain.linearRampToValueAtTime(0.5 * velocity, time + 0.01);
+    toneGain.exponentialRampToValueAtTime(0.0001, time + 0.22);
+    tone.connect(toneGain).connect(drumBus);
+    tone.start(time);
+    tone.stop(time + 0.24);
+  }
+
+  function scheduleHatHit(time, velocity, open){
+    if (!ctx || !drumBus) return;
+    const src = ctx.createBufferSource();
+    src.buffer = ensureNoiseBuffer();
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 6000 + velocity * 3200;
+    hp.Q.value = 0.9;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, time);
+    env.gain.linearRampToValueAtTime(0.6 * velocity, time + 0.004);
+    const decay = open ? 0.25 : 0.1;
+    env.gain.exponentialRampToValueAtTime(0.0001, time + decay);
+    src.connect(hp).connect(env).connect(drumBus);
+    src.start(time);
+    src.stop(time + decay + 0.05);
+  }
+
+  function regenerateDrumPatterns(){
+    const steps = parseInt(els.drumLength.value, 10) || 16;
+    drumPatternSteps = steps;
+    const density = clamp(parseFloat(els.drumDensity.value) || 0, 0, 0.95);
+    const fillChance = clamp(parseFloat(els.drumFill.value) || 0, 0, 1);
+    const fillActive = Math.random() < fillChance;
+    const fillStart = steps - Math.max(4, Math.floor(steps / 4));
+    drumCycleSeed = (drumCycleSeed + 1) % 9973;
+    const kickPhase = (drumCycleSeed * 3) % steps;
+    const snarePhase = (drumCycleSeed * 5) % steps;
+    const hatPhase = (drumCycleSeed * 7) % steps;
+
+    const kick = new Array(steps).fill(0);
+    const snare = new Array(steps).fill(0);
+    const hat = new Array(steps).fill(0.35);
+
+    for (let i = 0; i < steps; i++){
+      hat[i] = (i % DRUM_STEPS_PER_BEAT === 0) ? 0.6 : (i % 2 === 0 ? 0.45 : 0.32);
+    }
+
+    kick[0] = 1.0;
+    kick[Math.floor(steps / 2) % steps] = Math.max(kick[Math.floor(steps / 2) % steps], 0.75);
+    const beat2 = Math.floor(steps / 4) % steps;
+    const beat4 = Math.floor((steps * 3) / 4) % steps;
+    snare[beat2] = 0.82;
+    snare[beat4] = 0.9;
+
+    for (let i = 0; i < steps; i++){
+      const fillBoost = fillActive && i >= fillStart ? 0.25 : 0;
+      const kickDensity = clamp(density * 0.75 + fillBoost, 0, 0.95);
+      const snareDensity = clamp(density * 0.55 + fillBoost * 1.4, 0, 0.95);
+      const hatDensity = clamp(density * 0.3 + fillBoost * 1.1, 0, 0.9);
+
+      const kickSeq = vanDerCorput(i + kickPhase + 1, 2);
+      if (kickSeq < kickDensity){
+        const vel = clamp(0.55 + 0.45 * (1 - kickSeq / Math.max(kickDensity, 0.0001)), 0.35, 1.0);
+        kick[i] = Math.max(kick[i], vel);
+      }
+
+      if (i !== beat2 && i !== beat4){
+        const snareSeq = vanDerCorput(i + snarePhase + 1, 3);
+        if (snareSeq < snareDensity){
+          const vel = clamp(0.5 + 0.4 * (1 - snareSeq / Math.max(snareDensity, 0.0001)), 0.3, 0.95);
+          snare[i] = Math.max(snare[i], vel);
+        }
+      }
+
+      const hatSeq = vanDerCorput(i + hatPhase + 1, 5);
+      if (hatSeq < hatDensity){
+        const vel = clamp(0.65 + 0.3 * (1 - hatSeq / Math.max(hatDensity, 0.0001)), 0.4, 1.0);
+        hat[i] = Math.max(hat[i], vel);
+      }
+    }
+
+    for (let i = 0; i < steps; i += DRUM_STEPS_PER_BEAT){
+      kick[i] = Math.max(kick[i], 0.85);
+    }
+
+    drumPatterns = { kick, snare, hat };
+    drumPatternNeedsUpdate = false;
+  }
+
+  function scheduleDrumSteps(baseTime, beatIndex){
+    if (!ctx || !drumBus || !els.drumToggle.checked) return;
+    if (drumPatternNeedsUpdate || !drumPatterns) regenerateDrumPatterns();
+    if (!drumPatterns) return;
+    const steps = drumPatternSteps || 16;
+    const stepDuration = BEAT_SEC / DRUM_STEPS_PER_BEAT;
+    for (let s = 0; s < DRUM_STEPS_PER_BEAT; s++){
+      const globalStep = drumStepCounter + s;
+      const stepIndex = globalStep % steps;
+      const scheduledTime = baseTime + s * stepDuration;
+      const kickVel = drumPatterns.kick[stepIndex];
+      if (kickVel > 0.05){
+        const { time, velocity } = humanizeHit(scheduledTime, kickVel, beatIndex * DRUM_STEPS_PER_BEAT + s, 'kick');
+        scheduleKickHit(time, velocity);
+      }
+      const snareVel = drumPatterns.snare[stepIndex];
+      if (snareVel > 0.05){
+        const { time, velocity } = humanizeHit(scheduledTime, snareVel, beatIndex * DRUM_STEPS_PER_BEAT + s + 11, 'snare');
+        scheduleSnareHit(time, velocity);
+      }
+      const hatVel = drumPatterns.hat[stepIndex];
+      if (hatVel > 0.05){
+        const { time, velocity } = humanizeHit(scheduledTime, hatVel, beatIndex * DRUM_STEPS_PER_BEAT + s + 23, 'hat');
+        scheduleHatHit(time, velocity, velocity > 0.82);
+      }
+    }
+    drumStepCounter = (drumStepCounter + DRUM_STEPS_PER_BEAT) % steps;
+    if (drumStepCounter === 0) drumPatternNeedsUpdate = true;
+  }
+
   // ==== Scheduling voices ====
   function scheduleBass(t, midi){
     const osc = ctx.createOscillator(); const env = ctx.createGain();
@@ -616,6 +851,8 @@
         scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98, subBeat); // slight pre-bias feels snappy
       }
 
+      scheduleDrumSteps(nextNoteTime, currentBeat);
+
       scheduleClick(nextNoteTime);
       applyNoiseModulations(currentBeat, nextNoteTime);
 
@@ -631,6 +868,9 @@
     currentBeat = 0;
     lastArpMidi = null;
     lastArpDegree = 0;
+    drumStepCounter = 0;
+    drumPatternNeedsUpdate = true;
+    drumCycleSeed = Math.floor(Math.random() * 9973);
     timerID = setInterval(()=>scheduler(), LOOKAHEAD*1000);
     els.start.disabled = true; els.stop.disabled = false;
   }
@@ -644,6 +884,8 @@
       ctx = null;
       // Keep the array but empty it; it will be rebuilt on next initAudio()
       padOscs = [];
+      drumPatterns = null;
+      noiseBuffer = null;
       els.start.disabled = false;
       els.stop.disabled = true;
       els.meterBar.style.width = "0%";
@@ -651,6 +893,15 @@
   }
 
   // ==== Presets ====
+  const BINAURAL_PRESETS = {
+    custom: null,
+    delta: { carrier: 200, beat: 2 },
+    theta: { carrier: 210, beat: 6 },
+    alpha: { carrier: 220, beat: 10 },
+    beta: { carrier: 230, beat: 18 },
+    gamma: { carrier: 240, beat: 40 },
+  };
+
   const PRESETS = {
     calm: ({key="C", scale="major", bpm=120, carrier=200, beat=8, carGain=0.22, pad=0.28, padCut=1100, lfoR=0.10, lfoD=220, bass=0.33, lp=340, echoT=0.22, echoF=0.35, echoLP=2800, sendPad=0.35, sendArp=0.55}) =>
       ({key,scale,bpm,carrier,beat,carGain,pad,padCut,lfoR,lfoD,bass,lp,echoT,echoF,echoLP,sendPad,sendArp}),
@@ -674,6 +925,7 @@
     els.bassGain.value = p.bass; els.lpCutoff.value = p.lp;
     els.echoTime.value = p.echoT; els.echoFB.value = p.echoF; els.echoLP.value = p.echoLP;
     els.echoSendPad.value = p.sendPad; els.echoSendArp.value = p.sendArp;
+    if (els.binauralPreset) els.binauralPreset.value = 'custom';
 
     // Only touch AudioNodes if we're running and nodes exist
     if (ctx) {
@@ -697,6 +949,14 @@
   els.start.addEventListener('click', start);
   els.stop.addEventListener('click', stop);
   els.applyPreset.addEventListener('click', ()=>applyPreset(els.preset.value));
+
+  els.binauralPreset.addEventListener('change', ()=>{
+    const choice = BINAURAL_PRESETS[els.binauralPreset.value];
+    if (!choice) return;
+    els.carrier.value = choice.carrier;
+    els.beat.value = choice.beat;
+    setCarrierFreqs();
+  });
 
   els.bpm.addEventListener('input', e=> setBpm(e.target.value));
 
@@ -734,6 +994,14 @@
   els.arpGain.addEventListener('input', ()=>{ if(ctx) arpBus.gain.setValueAtTime(parseFloat(els.arpGain.value), ctx.currentTime); });
   els.arpDensity.addEventListener('input', ()=>{});
   els.arpWave.addEventListener('change', ()=>{});
+
+  const markDrumsDirty = ()=>{ drumPatternNeedsUpdate = true; };
+  els.drumToggle.addEventListener('change', ()=>{ markDrumsDirty(); });
+  els.drumLevel.addEventListener('input', ()=>{ if(ctx) drumBus.gain.setValueAtTime(parseFloat(els.drumLevel.value), ctx.currentTime); });
+  els.drumDensity.addEventListener('input', markDrumsDirty);
+  els.drumFill.addEventListener('input', markDrumsDirty);
+  els.drumHuman.addEventListener('input', ()=>{});
+  els.drumLength.addEventListener('change', ()=>{ drumStepCounter = 0; markDrumsDirty(); });
 
   els.clickToggle.addEventListener('change', ()=>{});
   els.clickGain.addEventListener('input', ()=>{ if(ctx) clickBus.gain.setValueAtTime(parseFloat(els.clickGain.value), ctx.currentTime); });
