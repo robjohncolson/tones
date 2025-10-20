@@ -189,7 +189,73 @@
   }
   function midiToFreq(m){ return 440 * Math.pow(2,(m-69)/12); }
   function clamp(v,l,h){ return Math.max(l, Math.min(h,v)); }
-  function choice(a){ return a[(Math.random()*a.length)|0]; }
+
+  // ==== Smooth noise utilities ====
+  function mulberry32(seed){
+    let t = seed >>> 0;
+    return function(){
+      t += 0x6D2B79F5;
+      let r = Math.imul(t ^ t >>> 15, 1 | t);
+      r ^= r + Math.imul(r ^ r >>> 7, 61 | r);
+      return ((r ^ r >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function createPerlinNoise(seed){
+    const rand = mulberry32(seed);
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    for (let i = 255; i > 0; i--){
+      const j = Math.floor(rand() * (i + 1));
+      const tmp = p[i]; p[i] = p[j]; p[j] = tmp;
+    }
+    const perm = new Uint8Array(512);
+    for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+    const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+    const lerp = (t,a,b) => a + t * (b - a);
+    const grad = (hash,x,y,z) => {
+      const h = hash & 15;
+      const u = h < 8 ? x : y;
+      const v = h < 4 ? y : (h===12||h===14 ? x : z);
+      return ((h & 1)===0 ? u : -u) + ((h & 2)===0 ? v : -v);
+    };
+    return function(x,y,z){
+      const X = Math.floor(x) & 255;
+      const Y = Math.floor(y) & 255;
+      const Z = Math.floor(z) & 255;
+      const xf = x - Math.floor(x);
+      const yf = y - Math.floor(y);
+      const zf = z - Math.floor(z);
+      const u = fade(xf), v = fade(yf), w = fade(zf);
+      const aaa = perm[X   + perm[Y   + perm[Z  ]]];
+      const aba = perm[X   + perm[Y+1 + perm[Z  ]]];
+      const aab = perm[X   + perm[Y   + perm[Z+1]]];
+      const abb = perm[X   + perm[Y+1 + perm[Z+1]]];
+      const baa = perm[X+1 + perm[Y   + perm[Z  ]]];
+      const bba = perm[X+1 + perm[Y+1 + perm[Z  ]]];
+      const bab = perm[X+1 + perm[Y   + perm[Z+1]]];
+      const bbb = perm[X+1 + perm[Y+1 + perm[Z+1]]];
+      const x1 = lerp(u, grad(aaa, xf    , yf    , zf    ), grad(baa, xf-1 , yf    , zf    ));
+      const x2 = lerp(u, grad(aba, xf    , yf-1  , zf    ), grad(bba, xf-1 , yf-1  , zf    ));
+      const y1 = lerp(v, x1, x2);
+      const x3 = lerp(u, grad(aab, xf    , yf    , zf-1  ), grad(bab, xf-1 , yf    , zf-1  ));
+      const x4 = lerp(u, grad(abb, xf    , yf-1  , zf-1  ), grad(bbb, xf-1 , yf-1  , zf-1  ));
+      const y2 = lerp(v, x3, x4);
+      return lerp(w, y1, y2);
+    };
+  }
+  const noiseSeed = Math.floor(Math.random() * 0xFFFFFFFF);
+  const perlinNoise = createPerlinNoise(noiseSeed);
+  const noiseOffsets = {
+    harmony: Math.random() * 256,
+    bass: Math.random() * 256,
+    arp: Math.random() * 256,
+    timbre: Math.random() * 256,
+    space: Math.random() * 256,
+  };
+  const noise01 = (x,y,z) => (perlinNoise(x,y,z) + 1) * 0.5;
+  function streamNoise(channel, beat, rate, y=0.4, z=0.7){
+    return noise01(noiseOffsets[channel] + beat * rate, y, z);
+  }
 
   // ==== DOM ====
   const $ = sel => document.querySelector(sel);
@@ -257,6 +323,8 @@
   let currentChord = 0;
   let lastBassMidi = 40;
   let lastBassPitchClass = lastBassMidi % 12;
+  let lastArpMidi = null;
+  let lastArpDegree = 0;
 
   function setBpm(val){
     BPM = clamp(parseInt(val,10), 40, 240);
@@ -376,16 +444,22 @@
   function setStereoWidth(w){ if(ctx){ pannerL.pan.value=-clamp(w,0,1); pannerR.pan.value=+clamp(w,0,1);} }
 
   // ==== Musical choices ====
-  function nextChordIndex(prev){
+  function nextChordIndex(prev, beat){
     const c = PROG[prev] || PROG[0];
     const sorted = c.slice().sort((a,b)=>Math.abs(a-prev)-Math.abs(b-prev));
-    return Math.random()<0.7 ? sorted[0] : choice(c);
+    const drift = streamNoise('harmony', beat, 0.045, 0.16, 0.55);
+    if (drift < 0.55) return sorted[0];
+    const tension = streamNoise('harmony', beat, 0.032, 0.72, 0.21);
+    const idx = Math.min(c.length - 1, Math.floor(tension * c.length));
+    return c[idx];
   }
-  function pickBassMidi(chordIndex){
+  function pickBassMidi(chordIndex, beat){
     const triad = TRIADS[chordIndex];
-    const pick = Math.random()<0.62 ? triad[0] : (Math.random()<0.8 ? triad[2] : triad[1]);
+    const roll = streamNoise('bass', beat, 0.082, 0.28, 0.63);
+    const pick = roll < 0.5 ? triad[0] : (roll < 0.82 ? triad[2] : triad[1]);
     const octave = parseInt(els.bassOct.value,10);
     let m = midiFromKeyScaleDegree(keyRoot, scaleName, pick, octave+1);
+    if (streamNoise('bass', beat, 0.018, 0.61, 0.48) < 0.18) m -= 12;
     while (m > 57) m -= 12;
     while (m < 40) m += 12;
     if (Math.abs(m-lastBassMidi) > 7){ m += (m>lastBassMidi)?-12:+12; }
@@ -394,17 +468,61 @@
   }
 
   // pick an arpeggio MIDI: diatonic, avoid current bass pitch-class, upper register
-  function pickArpMidi(chordIndex){
-    const degrees = [0,2,4,6,1,3,5]; // bias toward chord tones then color
-    let deg = choice(degrees);
+  function pickArpMidi(chordIndex, beat){
+    const degrees = [0,2,4,6,1,3,5];
+    const contour = streamNoise('arp', beat, 0.105, 0.44, 0.31);
+    let deg = degrees[Math.min(degrees.length-1, Math.floor(contour * degrees.length))];
+    const directional = streamNoise('arp', beat, 0.07, 0.88, 0.53);
+    if (lastArpMidi !== null){
+      const idx = degrees.indexOf(lastArpDegree);
+      if (idx >= 0){
+        if (directional > 0.66) deg = degrees[(idx + 1) % degrees.length];
+        else if (directional < 0.34) deg = degrees[(idx + degrees.length - 1) % degrees.length];
+      }
+    }
     // avoid sharing pitch class with bass
     let tries = 0;
     while ( ((keyRoot + SCALES[scaleName][deg%7]) % 12) === lastBassPitchClass && tries++ < 6 ){
       deg = (deg + 2) % 7;
     }
-    let m = midiFromKeyScaleDegree(keyRoot, scaleName, deg, 5); // upper register
-    if (Math.random()<0.3) m += 12; // occasional sparkle
+    let m = midiFromKeyScaleDegree(keyRoot, scaleName, deg, 5);
+    if (streamNoise('arp', beat, 0.052, 0.62, 0.91) > 0.7) m += 12;
+    lastArpMidi = m;
+    lastArpDegree = deg;
     return m;
+  }
+
+  function bassTimingOffset(beat){
+    return (streamNoise('bass', beat, 0.19, 0.91, 0.22) - 0.5) * 0.045;
+  }
+
+  function applyNoiseModulations(beat, t){
+    if (!ctx) return;
+    const padBase = parseFloat(els.padCutoff.value);
+    const padDelta = (streamNoise('timbre', beat, 0.012, 0.33, 0.45) - 0.5) * 480;
+    if (padLP?.frequency){
+      const target = clamp(padBase + padDelta, 200, 4000);
+      try { padLP.frequency.linearRampToValueAtTime(target, t + 0.05); } catch {}
+    }
+    const echoBase = parseFloat(els.echoLP.value);
+    const echoDelta = (streamNoise('timbre', beat, 0.016, 0.78, 0.14) - 0.5) * 720;
+    if (echoLPF?.frequency){
+      const target = clamp(echoBase + echoDelta, 800, 6000);
+      try { echoLPF.frequency.setValueAtTime(target, Math.max(t, ctx.currentTime)); } catch {}
+    }
+    const widthBase = parseFloat(els.stereoWidth.value);
+    const widthDelta = (streamNoise('space', beat, 0.008, 0.57, 0.66) - 0.5) * 0.22;
+    setStereoWidth(clamp(widthBase + widthDelta, 0, 1));
+    const beatBase = parseFloat(els.beat.value);
+    const micro = (streamNoise('space', beat, 0.004, 0.19, 0.12) - 0.5) * 0.6;
+    if (carrierLeft?.frequency && carrierRight?.frequency){
+      const base = parseFloat(els.carrier.value);
+      const targetTime = Math.max(t, ctx.currentTime);
+      try {
+        carrierLeft.frequency.linearRampToValueAtTime(base - (beatBase + micro) / 2, targetTime);
+        carrierRight.frequency.linearRampToValueAtTime(base + (beatBase + micro) / 2, targetTime);
+      } catch {}
+    }
   }
 
   // ==== Scheduling voices ====
@@ -443,16 +561,19 @@
     }
   }
 
-  function scheduleArp(t){
+  function scheduleArp(t, beat){
     if (!els.arpToggle.checked) return;
     const osc = ctx.createOscillator(); const env = ctx.createGain();
-    const m = pickArpMidi(currentChord);
+    const m = pickArpMidi(currentChord, beat);
     osc.type = els.arpWave.value; osc.frequency.setValueAtTime(midiToFreq(m), t);
     env.gain.setValueAtTime(0.0001, t);
-    env.gain.linearRampToValueAtTime(0.9, t+0.01);
-    env.gain.exponentialRampToValueAtTime(0.0001, t+0.18);
+    const attack = 0.008 + streamNoise('arp', beat, 0.18, 0.27, 0.74) * 0.01;
+    const decay = 0.12 + streamNoise('arp', beat, 0.14, 0.51, 0.39) * 0.08;
+    env.gain.linearRampToValueAtTime(0.9, t + attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + decay);
     osc.connect(env).connect(arpBus);
-    osc.start(t); osc.stop(t+0.2);
+    osc.start(t);
+    osc.stop(t + decay + 0.04);
   }
 
   function scheduleClick(t){
@@ -473,22 +594,30 @@
     if (!ctx) return;
     while (nextNoteTime < ctx.currentTime + SCHEDULE_AHEAD){
       const beatInBar = currentBeat % 16;
-      if (beatInBar === 0 || beatInBar === 8 || (beatInBar===4 && Math.random()<0.5) || (beatInBar===12 && Math.random()<0.5)){
-        currentChord = nextChordIndex(currentChord);
+      const changeBias = streamNoise('harmony', currentBeat, 0.024, 0.91, 0.38);
+      const shouldChange = beatInBar === 0 || beatInBar === 8 ||
+        (beatInBar === 4 && changeBias > 0.46) ||
+        (beatInBar === 12 && changeBias > 0.58);
+      if (shouldChange){
+        currentChord = nextChordIndex(currentChord, currentBeat);
         schedulePadChord(nextNoteTime, currentChord);
       }
 
       // Bass each beat
-      const midi = pickBassMidi(currentChord);
-      scheduleBass(nextNoteTime, midi);
+      const midi = pickBassMidi(currentChord, currentBeat);
+      const bassOffset = bassTimingOffset(currentBeat);
+      const bassTime = Math.max(nextNoteTime + bassOffset, ctx.currentTime + 0.0005);
+      scheduleBass(bassTime, midi);
 
       // Arp density: 1/beat, 2/beat (eighths), or 3/beat (triplet-ish)
       const density = parseInt(els.arpDensity.value,10);
       for(let i=0;i<density;i++){
-        scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98); // slight pre-bias feels snappy
+        const subBeat = currentBeat + (i / Math.max(1, density));
+        scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98, subBeat); // slight pre-bias feels snappy
       }
 
       scheduleClick(nextNoteTime);
+      applyNoiseModulations(currentBeat, nextNoteTime);
 
       nextNoteTime += BEAT_SEC;
       currentBeat++;
@@ -500,6 +629,8 @@
     if (!ctx) initAudio();
     nextNoteTime = ctx.currentTime + 0.05;
     currentBeat = 0;
+    lastArpMidi = null;
+    lastArpDegree = 0;
     timerID = setInterval(()=>scheduler(), LOOKAHEAD*1000);
     els.start.disabled = true; els.stop.disabled = false;
   }
