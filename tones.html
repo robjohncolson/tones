@@ -643,8 +643,8 @@
     tone.frequency.setValueAtTime(180 + velocity * 80, time);
     const toneGain = ctx.createGain();
     toneGain.gain.setValueAtTime(0.0001, time);
-    toneGain.linearRampToValueAtTime(0.5 * velocity, time + 0.01);
-    toneGain.exponentialRampToValueAtTime(0.0001, time + 0.22);
+    toneGain.gain.linearRampToValueAtTime(0.5 * velocity, time + 0.01);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.22);
     tone.connect(toneGain).connect(drumBus);
     tone.start(time);
     tone.stop(time + 0.24);
@@ -671,59 +671,62 @@
   function regenerateDrumPatterns(){
     const steps = parseInt(els.drumLength.value, 10) || 16;
     drumPatternSteps = steps;
-    const density = clamp(parseFloat(els.drumDensity.value) || 0, 0, 0.95);
+    const beats = Math.max(1, Math.floor(steps / DRUM_STEPS_PER_BEAT));
+    const density = clamp(parseFloat(els.drumDensity.value) || 0, 0, 1);
     const fillChance = clamp(parseFloat(els.drumFill.value) || 0, 0, 1);
     const fillActive = Math.random() < fillChance;
-    const fillStart = steps - Math.max(4, Math.floor(steps / 4));
-    drumCycleSeed = (drumCycleSeed + 1) % 9973;
-    const kickPhase = (drumCycleSeed * 3) % steps;
-    const snarePhase = (drumCycleSeed * 5) % steps;
-    const hatPhase = (drumCycleSeed * 7) % steps;
 
     const kick = new Array(steps).fill(0);
     const snare = new Array(steps).fill(0);
-    const hat = new Array(steps).fill(0.35);
+    const hat = new Array(steps).fill(0);
 
     for (let i = 0; i < steps; i++){
-      hat[i] = (i % DRUM_STEPS_PER_BEAT === 0) ? 0.6 : (i % 2 === 0 ? 0.45 : 0.32);
+      hat[i] = (i % 2 === 0) ? 0.55 : 0.35;
     }
 
-    kick[0] = 1.0;
-    kick[Math.floor(steps / 2) % steps] = Math.max(kick[Math.floor(steps / 2) % steps], 0.75);
-    const beat2 = Math.floor(steps / 4) % steps;
-    const beat4 = Math.floor((steps * 3) / 4) % steps;
-    snare[beat2] = 0.82;
-    snare[beat4] = 0.9;
+    for (let beat = 0; beat < beats; beat++){
+      const step = beat * DRUM_STEPS_PER_BEAT;
+      const patternBeat = beat % 4;
 
-    for (let i = 0; i < steps; i++){
-      const fillBoost = fillActive && i >= fillStart ? 0.25 : 0;
-      const kickDensity = clamp(density * 0.75 + fillBoost, 0, 0.95);
-      const snareDensity = clamp(density * 0.55 + fillBoost * 1.4, 0, 0.95);
-      const hatDensity = clamp(density * 0.3 + fillBoost * 1.1, 0, 0.9);
-
-      const kickSeq = vanDerCorput(i + kickPhase + 1, 2);
-      if (kickSeq < kickDensity){
-        const vel = clamp(0.55 + 0.45 * (1 - kickSeq / Math.max(kickDensity, 0.0001)), 0.35, 1.0);
-        kick[i] = Math.max(kick[i], vel);
-      }
-
-      if (i !== beat2 && i !== beat4){
-        const snareSeq = vanDerCorput(i + snarePhase + 1, 3);
-        if (snareSeq < snareDensity){
-          const vel = clamp(0.5 + 0.4 * (1 - snareSeq / Math.max(snareDensity, 0.0001)), 0.3, 0.95);
-          snare[i] = Math.max(snare[i], vel);
+      if (patternBeat === 0){
+        kick[step] = Math.max(kick[step], 0.95);
+        if (density > 0.25){
+          const ghost = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
+          kick[ghost] = Math.max(kick[ghost], 0.45 + density * 0.25);
+        }
+      } else if (patternBeat === 2){
+        kick[step] = Math.max(kick[step], 0.82);
+        if (density > 0.5){
+          const syncopated = (step + 1) % steps;
+          kick[syncopated] = Math.max(kick[syncopated], 0.5 + density * 0.3);
         }
       }
 
-      const hatSeq = vanDerCorput(i + hatPhase + 1, 5);
-      if (hatSeq < hatDensity){
-        const vel = clamp(0.65 + 0.3 * (1 - hatSeq / Math.max(hatDensity, 0.0001)), 0.4, 1.0);
-        hat[i] = Math.max(hat[i], vel);
+      if (patternBeat === 1 || patternBeat === 3){
+        const base = patternBeat === 1 ? 0.82 : 0.88;
+        snare[step] = Math.max(snare[step], base);
+        if (density > 0.45){
+          const flamOffset = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
+          snare[flamOffset] = Math.max(snare[flamOffset], 0.35 + density * 0.25);
+        }
+      }
+
+      if (density > 0.35 && patternBeat === 3){
+        const openHatStep = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
+        hat[openHatStep] = Math.max(hat[openHatStep], 0.75);
       }
     }
 
-    for (let i = 0; i < steps; i += DRUM_STEPS_PER_BEAT){
-      kick[i] = Math.max(kick[i], 0.85);
+    if (fillActive && beats >= 2){
+      const fillBeatStart = (beats - 1) * DRUM_STEPS_PER_BEAT;
+      for (let i = 0; i < DRUM_STEPS_PER_BEAT; i++){
+        const idx = (fillBeatStart + i) % steps;
+        const progress = i / Math.max(1, DRUM_STEPS_PER_BEAT - 1);
+        snare[idx] = Math.max(snare[idx], 0.45 + progress * 0.4);
+        hat[idx] = Math.max(hat[idx], 0.65 + progress * 0.2);
+      }
+      const finalCrash = (fillBeatStart + DRUM_STEPS_PER_BEAT) % steps;
+      hat[finalCrash] = Math.max(hat[finalCrash], 0.9);
     }
 
     drumPatterns = { kick, snare, hat };
