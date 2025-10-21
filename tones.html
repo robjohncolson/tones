@@ -218,8 +218,9 @@
 
     <section class="muted">
       <strong>What it’s doing:</strong> binaural carrier sets the beat frequency; a harmony engine picks diatonic
-      progressions; bass “hits” every beat; a pad sustains triads with a slow filter LFO; an arpeggio dances in key;
-      a simple echo adds space. Everything is scheduled ahead for tight timing. Listen comfortably; no medical claims.
+      progressions; Perlin/Brownian rest maps open negative space so bass, pad, arp, drums, and lead can breathe; a pad
+      sustains triads with a slow filter LFO; an arpeggio dances in key; a simple echo adds space. Everything is
+      scheduled ahead for tight timing. Listen comfortably; no medical claims.
     </section>
   </main>
 
@@ -345,6 +346,11 @@
     leadHarmony: Math.random() * 256,
     leadGroove: Math.random() * 256,
     leadAccent: Math.random() * 256,
+    restPad: Math.random() * 256,
+    restBass: Math.random() * 256,
+    restArp: Math.random() * 256,
+    restDrum: Math.random() * 256,
+    restLead: Math.random() * 256,
   };
   const noise01 = (x,y,z) => (perlinNoise(x,y,z) + 1) * 0.5;
   function streamNoise(channel, beat, rate, y=0.4, z=0.7){
@@ -494,6 +500,175 @@
     arp: createBrownianWalker((noiseSeed ^ 0xC0DEF) >>> 0, { min: -0.8, max: 6.8, step: 1.15, damping: 0.19, velocityMax: 2.7 }),
     bass: createBrownianWalker((noiseSeed ^ 0xDEED) >>> 0, { min: -0.6, max: 4.4, step: 0.92, damping: 0.17, velocityMax: 2.4 }),
   };
+
+  const restConfigs = {
+    pad: {
+      key: 'restPad',
+      rate: 0.024,
+      y: 0.58,
+      z: 0.36,
+      mix: 0.58,
+      threshold: 0.42,
+      bias: 0.12,
+      stepScale: 0.46,
+      offset: -0.03,
+      previewFollow: 0.4,
+      memory: 0.33,
+      walkerMin: 0,
+      walkerMax: 1,
+      walker: createBrownianWalker((noiseSeed ^ 0xA137) >>> 0, { min: 0, max: 1, step: 0.32, damping: 0.22, velocityMax: 1.18 }),
+    },
+    bass: {
+      key: 'restBass',
+      rate: 0.041,
+      y: 0.62,
+      z: 0.67,
+      mix: 0.64,
+      threshold: 0.36,
+      bias: 0.09,
+      stepScale: 0.52,
+      offset: -0.01,
+      previewFollow: 0.45,
+      memory: 0.27,
+      walkerMin: 0,
+      walkerMax: 1,
+      walker: createBrownianWalker((noiseSeed ^ 0xB155) >>> 0, { min: 0, max: 1, step: 0.35, damping: 0.21, velocityMax: 1.2 }),
+    },
+    arp: {
+      key: 'restArp',
+      rate: 0.055,
+      y: 0.72,
+      z: 0.49,
+      mix: 0.58,
+      threshold: 0.4,
+      bias: 0.08,
+      stepScale: 0.48,
+      offset: -0.02,
+      previewFollow: 0.4,
+      memory: 0.3,
+      walkerMin: 0,
+      walkerMax: 1,
+      walker: createBrownianWalker((noiseSeed ^ 0xC0DE) >>> 0, { min: 0, max: 1, step: 0.4, damping: 0.23, velocityMax: 1.28 }),
+    },
+    drums: {
+      key: 'restDrum',
+      rate: 0.033,
+      y: 0.61,
+      z: 0.82,
+      mix: 0.62,
+      threshold: 0.33,
+      bias: 0.1,
+      stepScale: 0.4,
+      offset: -0.04,
+      previewFollow: 0.36,
+      memory: 0.4,
+      walkerMin: 0,
+      walkerMax: 1,
+      walker: createBrownianWalker((noiseSeed ^ 0xD00D) >>> 0, { min: 0, max: 1, step: 0.28, damping: 0.22, velocityMax: 1.08 }),
+    },
+    lead: {
+      key: 'restLead',
+      rate: 0.045,
+      y: 0.57,
+      z: 0.36,
+      mix: 0.6,
+      threshold: 0.38,
+      bias: 0.09,
+      stepScale: 0.5,
+      offset: 0.02,
+      previewFollow: 0.5,
+      memory: 0.28,
+      walkerMin: 0,
+      walkerMax: 1,
+      walker: createBrownianWalker((noiseSeed ^ 0x1EAD) >>> 0, { min: 0, max: 1, step: 0.38, damping: 0.21, velocityMax: 1.22 }),
+    }
+  };
+
+  function restState(name, beat, { update=true } = {}){
+    const cfg = restConfigs[name];
+    if (!cfg) return { activity: 1, resting: false, changed: false };
+    const rate = cfg.rate ?? 0.04;
+    const timeScale = cfg.timeScale ?? 1;
+    const baseNoise = streamNoise(cfg.key, beat * timeScale, rate, cfg.y ?? 0.5, cfg.z ?? 0.7);
+    const walker = cfg.walker;
+    let walkerNorm = baseNoise;
+    if (walker){
+      const min = cfg.walkerMin ?? 0;
+      const max = cfg.walkerMax ?? 1;
+      const anchorBase = clamp(baseNoise + (cfg.anchorOffset ?? 0), 0, 1);
+      const anchor = min + (max - min) * anchorBase;
+      if (!walker.initialized) walker.reset(anchor);
+      if (update){
+        walkerNorm = walker.sample({
+          anchor,
+          bias: cfg.bias ?? 0.08,
+          stepScale: cfg.stepScale ?? 0.5,
+          registerBias: (cfg.registerBias || 0) * (baseNoise - 0.5)
+        });
+      } else {
+        const prev = clamp(walker.value, min, max);
+        const follow = clamp(cfg.previewFollow ?? 0.5, 0, 1);
+        walkerNorm = prev + (anchor - prev) * follow;
+      }
+      const span = Math.max(1e-6, (cfg.walkerMax ?? 1) - (cfg.walkerMin ?? 0));
+      walkerNorm = clamp((walkerNorm - (cfg.walkerMin ?? 0)) / span, 0, 1);
+    }
+    const blend = clamp(cfg.mix ?? 0.5, 0, 1);
+    let activity = clamp(baseNoise * blend + walkerNorm * (1 - blend) + (cfg.offset ?? 0), 0, 1);
+    if (update){
+      if (Number.isFinite(cfg.prevActivity)){
+        const memory = clamp(cfg.memory ?? 0, 0, 0.95);
+        activity = clamp(cfg.prevActivity * memory + activity * (1 - memory), 0, 1);
+      }
+      cfg.prevActivity = activity;
+    }
+    const threshold = clamp(cfg.threshold ?? 0.4, 0.05, 0.95);
+    const prevRest = update ? cfg.prevResting : (cfg.prevResting ?? false);
+    const resting = activity < threshold;
+    const changed = update ? (cfg.prevResting === undefined ? false : resting !== cfg.prevResting) : false;
+    if (update) cfg.prevResting = resting;
+    return { activity, resting, changed, previous: prevRest };
+  }
+
+  function setPadEnergy(activity, time){
+    if (!els.padToggle.checked) return;
+    if (!padOscs || padOscs.length !== 3) return;
+    const sustain = clamp(0.18 + activity * 0.5, 0.08, 0.72);
+    for (const voice of padOscs){
+      if (!voice?.env) continue;
+      try {
+        voice.env.gain.cancelScheduledValues(time);
+        voice.env.gain.setTargetAtTime(sustain, time, 0.22);
+      } catch {}
+    }
+  }
+
+  function silencePad(time){
+    if (!padOscs || padOscs.length !== 3) return;
+    for (const voice of padOscs){
+      if (!voice?.env) continue;
+      try {
+        voice.env.gain.cancelScheduledValues(time);
+        voice.env.gain.setTargetAtTime(0.0001, time, 0.18);
+      } catch {}
+    }
+  }
+
+  function resetRestControllers(){
+    for (const key of Object.keys(restConfigs)){
+      const cfg = restConfigs[key];
+      if (!cfg) continue;
+      delete cfg.prevActivity;
+      delete cfg.prevResting;
+      if (cfg.walker){
+        const min = cfg.walkerMin ?? 0;
+        const max = cfg.walkerMax ?? 1;
+        const initNoise = streamNoise(cfg.key, Math.random() * 13.7, cfg.rate ?? 0.04, cfg.y ?? 0.5, cfg.z ?? 0.7);
+        const centre = min + (max - min) * clamp(initNoise, 0, 1);
+        try { cfg.walker.reset(centre); } catch {}
+      }
+    }
+  }
 
   const PAD_INVERSION_DEFAULT = 0;
   let padInversionIndex = PAD_INVERSION_DEFAULT;
@@ -1003,30 +1178,41 @@
     drumPatternNeedsUpdate = false;
   }
 
-  function scheduleDrumSteps(baseTime, beatIndex){
+  function scheduleDrumSteps(baseTime, beatIndex, energy=1){
     if (!ctx || !drumBus || !els.drumToggle.checked) return;
     if (drumPatternNeedsUpdate || !drumPatterns) regenerateDrumPatterns(beatIndex);
     if (!drumPatterns) return;
     const steps = drumPatternSteps || 16;
     const stepDuration = BEAT_SEC / DRUM_STEPS_PER_BEAT;
+    const intensity = clamp(energy, 0, 1);
+    if (intensity < 0.02){
+      drumStepCounter = (drumStepCounter + DRUM_STEPS_PER_BEAT) % steps;
+      if (drumStepCounter === 0) drumPatternNeedsUpdate = true;
+      return;
+    }
+    const minAudible = 0.05;
     for (let s = 0; s < DRUM_STEPS_PER_BEAT; s++){
       const globalStep = drumStepCounter + s;
       const stepIndex = globalStep % steps;
       const scheduledTime = baseTime + s * stepDuration;
-      const kickVel = drumPatterns.kick[stepIndex];
-      if (kickVel > 0.05){
+      const kickRaw = drumPatterns.kick[stepIndex];
+      const kickVel = kickRaw * intensity;
+      if (kickVel > minAudible){
         const { time, velocity } = humanizeHit(scheduledTime, kickVel, beatIndex * DRUM_STEPS_PER_BEAT + s, 'kick');
         scheduleKickHit(time, velocity);
       }
-      const snareVel = drumPatterns.snare[stepIndex];
-      if (snareVel > 0.05){
+      const snareRaw = drumPatterns.snare[stepIndex];
+      const snareVel = snareRaw * intensity;
+      if (snareVel > minAudible){
         const { time, velocity } = humanizeHit(scheduledTime, snareVel, beatIndex * DRUM_STEPS_PER_BEAT + s + 11, 'snare');
         scheduleSnareHit(time, velocity);
       }
-      const hatVel = drumPatterns.hat[stepIndex];
-      if (hatVel > 0.05){
+      const hatRaw = drumPatterns.hat[stepIndex];
+      const hatVel = hatRaw * intensity;
+      if (hatVel > minAudible){
         const { time, velocity } = humanizeHit(scheduledTime, hatVel, beatIndex * DRUM_STEPS_PER_BEAT + s + 23, 'hat');
-        scheduleHatHit(time, velocity, velocity > 0.82);
+        const open = hatRaw > 0.82 && intensity > 0.65;
+        scheduleHatHit(time, velocity, open);
       }
     }
     drumStepCounter = (drumStepCounter + DRUM_STEPS_PER_BEAT) % steps;
@@ -1034,18 +1220,23 @@
   }
 
   // ==== Scheduling voices ====
-  function scheduleBass(t, midi){
+  function scheduleBass(t, midi, energy=1){
     const osc = ctx.createOscillator(); const env = ctx.createGain();
     osc.type = els.bassWave.value; osc.frequency.setValueAtTime(midiToFreq(midi), t);
     env.gain.setValueAtTime(0.0001, t);
-    env.gain.linearRampToValueAtTime(1.0, t+0.015);
-    env.gain.exponentialRampToValueAtTime(0.25, t+0.12);
-    env.gain.exponentialRampToValueAtTime(0.0001, t+0.32);
+    const intensity = clamp(energy, 0, 1);
+    const peak = clamp(0.7 + intensity * 0.5, 0.35, 1.25);
+    const sustain = clamp(0.18 + intensity * 0.24, 0.08, 0.42);
+    const tail = clamp(0.22 + (1 - intensity) * 0.12, 0.2, 0.38);
+    env.gain.linearRampToValueAtTime(peak, t + 0.015);
+    env.gain.exponentialRampToValueAtTime(sustain, t + 0.12);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + tail + 0.1);
     osc.connect(env).connect(bassLP);
-    osc.start(t); osc.stop(t+0.35);
+    osc.start(t);
+    osc.stop(t + tail + 0.14);
   }
 
-  function schedulePadChord(t, chordIndex, beat=currentBeat){
+  function schedulePadChord(t, chordIndex, beat=currentBeat, activity=1){
     if (!els.padToggle.checked || !ctx) return;
 
     // Ensure pad voices exist if the scheduler fires early
@@ -1082,36 +1273,42 @@
       try {
         v.osc.frequency.cancelScheduledValues(t);
         v.osc.frequency.exponentialRampToValueAtTime(hz, t + 0.12);
-        v.env.gain.cancelScheduledValues(t);
-        v.env.gain.setTargetAtTime(0.6, t, 0.15);
       } catch {}
     }
+    setPadEnergy(activity, t);
   }
 
-  function scheduleArp(t, beat){
+  function scheduleArp(t, beat, energy=1){
     if (!els.arpToggle.checked) return;
+    const intensity = clamp(energy, 0, 1);
+    if (intensity < 0.05) return;
     const osc = ctx.createOscillator(); const env = ctx.createGain();
     const m = pickArpMidi(currentChord, beat);
     osc.type = els.arpWave.value; osc.frequency.setValueAtTime(midiToFreq(m), t);
     env.gain.setValueAtTime(0.0001, t);
     const attack = 0.008 + streamNoise('arp', beat, 0.18, 0.27, 0.74) * 0.01;
-    const decay = 0.12 + streamNoise('arp', beat, 0.14, 0.51, 0.39) * 0.08;
-    env.gain.linearRampToValueAtTime(0.9, t + attack);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+    const decayBase = 0.12 + streamNoise('arp', beat, 0.14, 0.51, 0.39) * 0.08;
+    const peak = clamp(0.55 + intensity * 0.55, 0.2, 1.05);
+    const decay = clamp(decayBase * (0.7 + intensity * 0.45), 0.08, 0.32);
+    env.gain.linearRampToValueAtTime(peak, t + attack);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + decay + (1 - intensity) * 0.08);
     osc.connect(env).connect(arpBus);
     osc.start(t);
     osc.stop(t + decay + 0.04);
   }
 
-  function scheduleLeadNote(t, midi, velocity=0.85, lengthSteps=LEAD_STEPS_PER_BEAT){
+  function scheduleLeadNote(t, midi, velocity=0.85, lengthSteps=LEAD_STEPS_PER_BEAT, energy=1){
     if (!ctx || !leadBus || !leadState.enabled || !els.leadToggle.checked) return;
     const osc = ctx.createOscillator();
     const env = ctx.createGain();
     const freq = midiToFreq(midi);
-    const clampedVel = clamp(velocity, 0.05, 1.0);
-    const gate = Math.max(1, lengthSteps || 1) * (BEAT_SEC / LEAD_STEPS_PER_BEAT);
-    const sustainTime = t + Math.max(0.05, gate * 0.72);
-    const release = Math.max(0.1, gate * 0.45);
+    const intensity = clamp(energy, 0, 1);
+    const velScale = clamp(0.45 + intensity * 0.65, 0.3, 1.1);
+    const clampedVel = clamp(velocity * velScale, 0.05, 1.0);
+    const gateBase = Math.max(1, lengthSteps || 1) * (BEAT_SEC / LEAD_STEPS_PER_BEAT);
+    const gate = gateBase * clamp(0.7 + intensity * 0.45, 0.5, 1.25);
+    const sustainTime = t + Math.max(0.05, gate * 0.7);
+    const release = Math.max(0.09, gate * (0.28 + intensity * 0.32));
     osc.type = els.leadWave.value;
     osc.frequency.setValueAtTime(freq, t);
     env.gain.setValueAtTime(0.0001, t);
@@ -1148,16 +1345,22 @@
   function buildLeadPhrase(){
     const section = leadGenState.sectionIndex || 0;
     const baseBeatsNoise = streamNoise('leadDensity', leadGenState.noiseCursor + section * 0.37, 0.03, 0.44, 0.76);
-    const phraseBeats = 4 + Math.round(baseBeatsNoise * 4);
+    const restPreview = restState('lead', section * 4, { update: false });
+    const restWeight = clamp(1 - (restPreview.activity ?? 1), 0, 1);
+    const phraseBeats = 4 + Math.round(baseBeatsNoise * (3.5 - restWeight * 1.4));
     const steps = Math.max(16, phraseBeats * LEAD_STEPS_PER_BEAT);
     const pattern = Array.from({ length: steps }, () => []);
     const scaleSteps = SCALES[scaleName] || SCALES.major;
     const octaveBase = parseInt(els.leadOct.value, 10) || 4;
     const chordDegrees = TRIADS[currentChord] || [0, 2, 4];
     let degree = Number.isFinite(leadGenState.lastDegree) ? leadGenState.lastDegree : (chordDegrees[0] ?? 0);
-    const restFloor = 0.26 - Math.min(0.1, section * 0.02);
-    const restCeil = restFloor + 0.22;
-    const restTarget = restFloor + streamNoise('leadDensity', leadGenState.noiseCursor + section * 1.7 + 4.2, 0.015, 0.63, 0.32) * (restCeil - restFloor);
+    const restFloor = clamp(0.24 + restWeight * 0.25 - Math.min(0.1, section * 0.02), 0.14, 0.72);
+    const restCeil = restFloor + 0.2 + restWeight * 0.14;
+    const restTarget = clamp(
+      restFloor + streamNoise('leadDensity', leadGenState.noiseCursor + section * 1.7 + 4.2, 0.015, 0.63, 0.32) * (restCeil - restFloor),
+      0.12,
+      0.88
+    );
     const phraseRoot = leadGenState.noiseCursor + section * 11.7;
     let wroteNote = false;
     const walker = leadGenState.brownian;
@@ -1295,19 +1498,31 @@
     return { timeOffset, velocityMul, lengthMul };
   }
 
-  function scheduleGenerativeLead(baseTime, stepDuration, beatIndex){
+  function scheduleGenerativeLead(baseTime, stepDuration, beatIndex, energy=1){
     if (leadGenState.mode !== 'generative') return;
+    const intensity = clamp(energy, 0, 1);
+    const velocityScale = clamp(0.35 + intensity * 0.65, 0.2, 1);
+    const lengthScale = clamp(0.6 + intensity * 0.5, 0.4, 1.45);
     for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
       if (!ensureGenerativePhrase()) return;
+      if (intensity < 0.08){
+        leadGenState.stepIndex++;
+        if (leadGenState.stepIndex >= leadGenState.steps){
+          ensureGenerativePhrase();
+        }
+        continue;
+      }
       const idx = leadGenState.stepIndex;
       const events = leadGenState.phrase[idx] || [];
       if (events.length){
         const globalStep = beatIndex * LEAD_STEPS_PER_BEAT + s;
         const groove = leadGrooveShape(globalStep);
         const time = Math.max(baseTime + s * stepDuration + groove.timeOffset, ctx.currentTime + 0.0004);
-        for (const ev of events){
-          const lengthSteps = Math.max(1, Math.round(ev.length * groove.lengthMul));
-          scheduleLeadNote(time, ev.midi, ev.velocity * groove.velocityMul, lengthSteps);
+        const playable = intensity < 0.28 ? events.slice(0, 1) : events;
+        for (const ev of playable){
+          const lengthSteps = Math.max(1, Math.round(ev.length * groove.lengthMul * lengthScale));
+          const vel = ev.velocity * groove.velocityMul * velocityScale;
+          scheduleLeadNote(time, ev.midi, vel, lengthSteps, intensity);
         }
       }
       leadGenState.stepIndex++;
@@ -1331,11 +1546,12 @@
     o.start(t); o.stop(t+0.08);
   }
 
-  function scheduleLeadLoop(baseTime, beatIndex){
+  function scheduleLeadLoop(baseTime, beatIndex, restInfo=null){
     if (!ctx || !leadBus || !leadState.enabled || !els.leadToggle.checked) return;
     const stepDuration = BEAT_SEC / LEAD_STEPS_PER_BEAT;
+    const intensity = restInfo ? clamp(restInfo.activity, 0, 1) : 1;
     if (leadGenState.mode === 'generative'){
-      scheduleGenerativeLead(baseTime, stepDuration, beatIndex);
+      scheduleGenerativeLead(baseTime, stepDuration, beatIndex, intensity);
       return;
     }
     for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
@@ -1347,7 +1563,8 @@
         const time = Math.max(baseTime + s * stepDuration + groove.timeOffset, ctx.currentTime + 0.0004);
         for (const ev of events){
           const lengthSteps = Math.max(1, Math.round(ev.length * groove.lengthMul));
-          scheduleLeadNote(time, ev.midi, ev.velocity * groove.velocityMul, lengthSteps);
+          const vel = ev.velocity * groove.velocityMul * clamp(0.75 + intensity * 0.35, 0.5, 1.1);
+          scheduleLeadNote(time, ev.midi, vel, lengthSteps, intensity);
         }
       }
     }
@@ -1493,6 +1710,11 @@
   function scheduler(){
     if (!ctx) return;
     while (nextNoteTime < ctx.currentTime + SCHEDULE_AHEAD){
+      const padRest = restState('pad', currentBeat);
+      const bassRest = restState('bass', currentBeat);
+      const arpRest = restState('arp', currentBeat);
+      const drumRest = restState('drums', currentBeat);
+      const leadRest = restState('lead', currentBeat, { update: leadGenState.mode === 'generative' });
       const beatInBar = currentBeat % 16;
       const changeBias = streamNoise('harmony', currentBeat, 0.024, 0.91, 0.38);
       const shouldChange = beatInBar === 0 || beatInBar === 8 ||
@@ -1500,25 +1722,40 @@
         (beatInBar === 12 && changeBias > 0.58);
       if (shouldChange){
         currentChord = nextChordIndex(currentChord, currentBeat);
-        schedulePadChord(nextNoteTime, currentChord, currentBeat);
+        if (padRest.resting){
+          silencePad(nextNoteTime);
+        } else {
+          schedulePadChord(nextNoteTime, currentChord, currentBeat, padRest.activity);
+        }
+      } else {
+        if (padRest.resting){
+          silencePad(nextNoteTime);
+        } else if (padRest.changed){
+          schedulePadChord(nextNoteTime, currentChord, currentBeat, padRest.activity);
+        } else {
+          setPadEnergy(padRest.activity, nextNoteTime);
+        }
       }
 
       // Bass each beat
       const midi = pickBassMidi(currentChord, currentBeat);
       const bassOffset = bassTimingOffset(currentBeat);
       const bassTime = Math.max(nextNoteTime + bassOffset, ctx.currentTime + 0.0005);
-      scheduleBass(bassTime, midi);
+      if (!bassRest.resting){
+        scheduleBass(bassTime, midi, bassRest.activity);
+      }
 
       // Arp density: 1/beat, 2/beat (eighths), or 3/beat (triplet-ish)
       const density = parseInt(els.arpDensity.value,10);
       for(let i=0;i<density;i++){
         const subBeat = currentBeat + (i / Math.max(1, density));
-        scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98, subBeat); // slight pre-bias feels snappy
+        const subEnergy = clamp(arpRest.activity - (i / Math.max(1, density)) * 0.25, 0, 1);
+        scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98, subBeat, subEnergy); // slight pre-bias feels snappy
       }
 
-      scheduleLeadLoop(nextNoteTime, currentBeat);
+      scheduleLeadLoop(nextNoteTime, currentBeat, leadRest);
 
-      scheduleDrumSteps(nextNoteTime, currentBeat);
+      scheduleDrumSteps(nextNoteTime, currentBeat, drumRest.activity);
 
       scheduleClick(nextNoteTime);
       applyNoiseModulations(currentBeat, nextNoteTime);
@@ -1552,6 +1789,7 @@
     leadStepCursor = 0;
     leadState.active.clear();
     resetLeadGenerator();
+    resetRestControllers();
     updateLeadRecordUI(true);
     timerID = setInterval(()=>scheduler(), LOOKAHEAD*1000);
     els.start.disabled = true; els.stop.disabled = false;
@@ -1576,6 +1814,7 @@
       bassWalkerIndex = BASS_WALKER_DEFAULT;
       lastBassChord = -1;
       arpWalkerIndex = ARP_WALKER_DEFAULT;
+      resetRestControllers();
       updateLeadRecordUI(true);
       els.start.disabled = false;
       els.stop.disabled = true;
