@@ -163,12 +163,18 @@
             <option value="sawtooth">saw</option>
           </select>
         </label>
+        <label>Lead mode
+          <select id="leadMode">
+            <option value="manual" selected>Keyboard loop</option>
+            <option value="generative">Generative (Perlin)</option>
+          </select>
+        </label>
         <label>Lead octave <input id="leadOct" type="range" min="3" max="6" step="1" value="4" /></label>
         <div class="split" style="margin:.4rem 0 0;">
           <button id="leadRecord" type="button">Record Loop</button>
           <button id="leadClear" type="button">Clear Loop</button>
         </div>
-        <div class="muted">Play with your keyboard (Z–M lower octave, Q–U upper). Records a 16-bar, 16th-note loop.</div>
+        <div class="muted">Play with your keyboard (Z–M lower octave, Q–U upper). Switch to Generative for a Perlin-noise lead that phrases itself.</div>
       </fieldset>
 
       <fieldset>
@@ -325,6 +331,11 @@
     space: Math.random() * 256,
     drums: Math.random() * 256,
     drumVel: Math.random() * 256,
+    leadDensity: Math.random() * 256,
+    leadContour: Math.random() * 256,
+    leadLength: Math.random() * 256,
+    leadVelocity: Math.random() * 256,
+    leadHarmony: Math.random() * 256,
   };
   const noise01 = (x,y,z) => (perlinNoise(x,y,z) + 1) * 0.5;
   function streamNoise(channel, beat, rate, y=0.4, z=0.7){
@@ -344,7 +355,7 @@
     padToggle:$('#padToggle'), padGain:$('#padGain'), padCutoff:$('#padCutoff'), padWave:$('#padWave'),
     lfoRate:$('#lfoRate'), lfoDepth:$('#lfoDepth'),
     arpToggle:$('#arpToggle'), arpGain:$('#arpGain'), arpDensity:$('#arpDensity'), arpWave:$('#arpWave'),
-    leadToggle:$('#leadToggle'), leadGain:$('#leadGain'), leadWave:$('#leadWave'), leadOct:$('#leadOct'),
+    leadToggle:$('#leadToggle'), leadGain:$('#leadGain'), leadWave:$('#leadWave'), leadMode:$('#leadMode'), leadOct:$('#leadOct'),
     leadRecord:$('#leadRecord'), leadClear:$('#leadClear'),
     drumToggle:$('#drumToggle'), drumLevel:$('#drumLevel'), drumDensity:$('#drumDensity'),
     drumFill:$('#drumFill'), drumHuman:$('#drumHuman'), drumLength:$('#drumLength'),
@@ -416,6 +427,17 @@
   const leadBuffer = Array.from({ length: LEAD_TOTAL_STEPS }, () => []);
   const leadState = { enabled: true, recording: false, active: new Map() };
   let leadStepCursor = 0;
+
+  const leadGenState = {
+    mode: 'manual',
+    phrase: [],
+    steps: 0,
+    stepIndex: 0,
+    repeatsRemaining: 0,
+    lastDegree: 0,
+    sectionIndex: 0,
+    noiseCursor: Math.random() * 512,
+  };
 
   const DRUM_STEPS_PER_BEAT = 4;
   let drumPatterns = null;
@@ -885,6 +907,159 @@
     osc.stop(sustainTime + release + 0.05);
   }
 
+  function resetLeadGenerator(){
+    leadGenState.phrase = [];
+    leadGenState.steps = 0;
+    leadGenState.stepIndex = 0;
+    leadGenState.repeatsRemaining = 0;
+    leadGenState.sectionIndex = 0;
+    leadGenState.lastDegree = TRIADS[currentChord]?.[0] ?? 0;
+    leadGenState.noiseCursor = Math.random() * 512;
+  }
+
+  function invalidateLeadGenerator(){
+    leadGenState.phrase = [];
+    leadGenState.steps = 0;
+    leadGenState.stepIndex = 0;
+  }
+
+  function buildLeadPhrase(){
+    const section = leadGenState.sectionIndex || 0;
+    const baseBeatsNoise = streamNoise('leadDensity', leadGenState.noiseCursor + section * 0.37, 0.03, 0.44, 0.76);
+    const phraseBeats = 4 + Math.round(baseBeatsNoise * 4);
+    const steps = Math.max(16, phraseBeats * LEAD_STEPS_PER_BEAT);
+    const pattern = Array.from({ length: steps }, () => []);
+    const scaleSteps = SCALES[scaleName] || SCALES.major;
+    const octaveBase = parseInt(els.leadOct.value, 10) || 4;
+    const chordDegrees = TRIADS[currentChord] || [0, 2, 4];
+    let degree = Number.isFinite(leadGenState.lastDegree) ? leadGenState.lastDegree : (chordDegrees[0] ?? 0);
+    const restFloor = 0.26 - Math.min(0.1, section * 0.02);
+    const restCeil = restFloor + 0.22;
+    const restTarget = restFloor + streamNoise('leadDensity', leadGenState.noiseCursor + section * 1.7 + 4.2, 0.015, 0.63, 0.32) * (restCeil - restFloor);
+    const phraseRoot = leadGenState.noiseCursor + section * 11.7;
+    let wroteNote = false;
+
+    for (let step = 0; step < steps;){
+      const densitySample = streamNoise('leadDensity', phraseRoot + step * 0.21, 0.18, 0.52, 0.64);
+      if (densitySample < restTarget){
+        const restSteps = 1 + Math.floor(streamNoise('leadDensity', phraseRoot + step * 0.19 + 7.3, 0.16, 0.34, 0.82) * 2);
+        step += restSteps;
+        continue;
+      }
+
+      const dirSample = streamNoise('leadContour', phraseRoot + step * 0.17, 0.12, 0.48, 0.79);
+      let direction = 0;
+      if (dirSample > 0.54) direction = 1;
+      else if (dirSample < 0.46) direction = -1;
+
+      const magSample = streamNoise('leadContour', phraseRoot + step * 0.17 + 2.9, 0.1, 0.28, 0.93);
+      let magnitude;
+      if (magSample > 0.94) magnitude = 4;
+      else if (magSample > 0.82) magnitude = 3;
+      else if (magSample > 0.6) magnitude = 2;
+      else if (magSample > 0.38) magnitude = 1;
+      else magnitude = 0;
+
+      let targetDegree = degree + direction * magnitude;
+      const leapSample = streamNoise('leadContour', phraseRoot + step * 0.13 + 8.4, 0.09, 0.69, 0.31);
+      if (leapSample > 0.88){
+        const leapDir = leapSample > 0.94 ? 1 : -1;
+        targetDegree = degree + leapDir * (leapSample > 0.97 ? 5 : 4);
+      }
+
+      const chordBias = streamNoise('leadHarmony', phraseRoot + step * 0.18, 0.2, 0.57, 0.44);
+      if (chordBias > 0.7){
+        const chordChoiceIdx = Math.floor(streamNoise('leadHarmony', phraseRoot + step * 0.18 + 5.1, 0.23, 0.63, 0.2) * chordDegrees.length) % chordDegrees.length;
+        const chordDegree = chordDegrees[chordChoiceIdx];
+        const desiredOct = Math.round((targetDegree - chordDegree) / scaleSteps.length);
+        targetDegree = chordDegree + desiredOct * scaleSteps.length;
+      } else if (chordBias < 0.16){
+        targetDegree += chordBias < 0.08 ? -1 : 1;
+      }
+
+      targetDegree = clamp(targetDegree, -2, 18);
+
+      const lengthSample = streamNoise('leadLength', phraseRoot + step * 0.23, 0.17, 0.73, 0.58);
+      let lengthSteps = 1 + Math.floor(lengthSample * 3);
+      if (section > 1 && lengthSteps < 2 && streamNoise('leadLength', phraseRoot + step * 0.23 + 2.6, 0.22, 0.41, 0.68) > 0.62){
+        lengthSteps += 1;
+      }
+      lengthSteps = Math.max(1, Math.min(lengthSteps, steps - step));
+
+      const velocitySample = streamNoise('leadVelocity', phraseRoot + step * 0.27, 0.15, 0.36, 0.82);
+      const velocity = clamp(0.6 + velocitySample * 0.32 + section * 0.018, 0.55, 0.98);
+      const midi = midiFromKeyScaleDegree(keyRoot, scaleName, targetDegree, octaveBase);
+      pattern[step].push({ midi, length: lengthSteps, velocity });
+      wroteNote = true;
+
+      const harmonyChance = streamNoise('leadHarmony', phraseRoot + step * 0.18 + 9.9, 0.21, 0.33, 0.71);
+      if (harmonyChance > 0.78){
+        const harmonyDegree = targetDegree + (harmonyChance > 0.92 ? 4 : 2);
+        const harmonyMidi = midiFromKeyScaleDegree(keyRoot, scaleName, harmonyDegree, octaveBase);
+        pattern[step].push({ midi: harmonyMidi, length: Math.max(1, lengthSteps - 1), velocity: clamp(velocity * 0.82, 0.45, 0.9) });
+      }
+
+      degree = targetDegree;
+      step += lengthSteps;
+    }
+
+    if (!wroteNote){
+      const fallbackMidi = midiFromKeyScaleDegree(keyRoot, scaleName, degree, octaveBase);
+      pattern[0].push({ midi: fallbackMidi, length: Math.min(steps, 2), velocity: 0.72 });
+    }
+
+    const repeatNoise = streamNoise('leadDensity', phraseRoot + 77, 0.028, 0.42, 0.66);
+    const repeats = 2 + Math.floor(repeatNoise * 3);
+    return { pattern, steps, repeats, lastDegree: degree };
+  }
+
+  function ensureGenerativePhrase(force=false){
+    if (leadGenState.mode !== 'generative') return false;
+    if (force){
+      const info = buildLeadPhrase();
+      leadGenState.phrase = info.pattern;
+      leadGenState.steps = info.steps;
+      leadGenState.stepIndex = 0;
+      leadGenState.repeatsRemaining = Math.max(0, (info.repeats || 1) - 1);
+      leadGenState.lastDegree = info.lastDegree;
+      leadGenState.sectionIndex++;
+      return true;
+    }
+
+    const hasPhrase = Array.isArray(leadGenState.phrase) && leadGenState.steps > 0;
+    if (!hasPhrase){
+      return ensureGenerativePhrase(true);
+    }
+    if (leadGenState.stepIndex >= leadGenState.steps){
+      if (leadGenState.repeatsRemaining > 0){
+        leadGenState.stepIndex = 0;
+        leadGenState.repeatsRemaining--;
+        return true;
+      }
+      return ensureGenerativePhrase(true);
+    }
+    return true;
+  }
+
+  function scheduleGenerativeLead(baseTime, stepDuration){
+    if (leadGenState.mode !== 'generative') return;
+    for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
+      if (!ensureGenerativePhrase()) return;
+      const idx = leadGenState.stepIndex;
+      const events = leadGenState.phrase[idx] || [];
+      if (events.length){
+        const time = baseTime + s * stepDuration;
+        for (const ev of events){
+          scheduleLeadNote(time, ev.midi, ev.velocity, ev.length);
+        }
+      }
+      leadGenState.stepIndex++;
+      if (leadGenState.stepIndex >= leadGenState.steps){
+        ensureGenerativePhrase();
+      }
+    }
+  }
+
   function scheduleClick(t){
     if (!els.clickToggle.checked) return;
     const o = ctx.createOscillator(); const e = ctx.createGain();
@@ -900,17 +1075,19 @@
   }
 
   function scheduleLeadLoop(baseTime){
-    if (!ctx) return;
+    if (!ctx || !leadBus || !leadState.enabled || !els.leadToggle.checked) return;
     const stepDuration = BEAT_SEC / LEAD_STEPS_PER_BEAT;
-    if (leadBus && leadState.enabled && els.leadToggle.checked){
-      for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
-        const stepIndex = (leadStepCursor + s) % LEAD_TOTAL_STEPS;
-        const events = leadBuffer[stepIndex];
-        if (events && events.length){
-          const time = baseTime + s * stepDuration;
-          for (const ev of events){
-            scheduleLeadNote(time, ev.midi, ev.velocity, ev.length);
-          }
+    if (leadGenState.mode === 'generative'){
+      scheduleGenerativeLead(baseTime, stepDuration);
+      return;
+    }
+    for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
+      const stepIndex = (leadStepCursor + s) % LEAD_TOTAL_STEPS;
+      const events = leadBuffer[stepIndex];
+      if (events && events.length){
+        const time = baseTime + s * stepDuration;
+        for (const ev of events){
+          scheduleLeadNote(time, ev.midi, ev.velocity, ev.length);
         }
       }
     }
@@ -957,15 +1134,41 @@
 
   function updateLeadControls(){
     leadState.enabled = !!els.leadToggle?.checked;
-    if (!leadState.enabled) updateLeadRecordUI(true);
-    if (els.leadRecord) els.leadRecord.disabled = !leadState.enabled;
-    if (els.leadClear) els.leadClear.disabled = !leadState.enabled;
+    const mode = els.leadMode ? els.leadMode.value : 'manual';
+    leadGenState.mode = mode;
+    const manual = mode === 'manual';
+    if (!leadState.enabled || !manual){
+      updateLeadRecordUI(true);
+      leadState.active.clear();
+    }
+    if (els.leadRecord) els.leadRecord.disabled = !leadState.enabled || !manual;
+    if (els.leadClear) els.leadClear.disabled = !leadState.enabled || !manual;
   }
 
   function toggleLeadRecording(){
-    if (!leadState.enabled) return;
+    if (!leadState.enabled || leadGenState.mode !== 'manual') return;
     leadState.recording = !leadState.recording;
     updateLeadRecordUI();
+  }
+
+  function handleLeadModeChange(){
+    const prevMode = leadGenState.mode;
+    const nextMode = els.leadMode ? els.leadMode.value : 'manual';
+    if (prevMode === nextMode) {
+      updateLeadControls();
+      return;
+    }
+    leadGenState.mode = nextMode;
+    if (nextMode === 'generative'){
+      leadState.recording = false;
+      leadState.active.clear();
+      resetLeadGenerator();
+    }
+    if (nextMode === 'manual'){
+      leadState.active.clear();
+    }
+    updateLeadControls();
+    if (nextMode === 'manual') updateLeadRecordUI(true);
   }
 
   function isTypingTarget(el){
@@ -982,6 +1185,7 @@
     if (e.repeat) return;
     if (!ctx || transportStartTime === null || !leadState.enabled) return;
     if (isTypingTarget(document.activeElement)) return;
+    if (leadGenState.mode !== 'manual') return;
     const key = typeof e.key === 'string' ? e.key.toLowerCase() : '';
     if (!(key in KEYBOARD_DEGREES)) return;
     const stepFloat = getLeadStepFloat(ctx.currentTime);
@@ -1010,6 +1214,7 @@
   }
 
   function handleLeadKeyUp(e){
+    if (leadGenState.mode !== 'manual') return;
     const id = leadKeyId(e);
     const info = leadState.active.get(id);
     if (!info) return;
@@ -1076,6 +1281,7 @@
     drumCycleSeed = Math.floor(Math.random() * 9973);
     leadStepCursor = 0;
     leadState.active.clear();
+    resetLeadGenerator();
     updateLeadRecordUI(true);
     timerID = setInterval(()=>scheduler(), LOOKAHEAD*1000);
     els.start.disabled = true; els.stop.disabled = false;
@@ -1094,6 +1300,7 @@
       noiseBuffer = null;
       transportStartTime = null;
       leadState.active.clear();
+      resetLeadGenerator();
       updateLeadRecordUI(true);
       els.start.disabled = false;
       els.stop.disabled = true;
@@ -1152,6 +1359,7 @@
       echoSendPad?.gain?.setValueAtTime(p.sendPad, ctx.currentTime);
       echoSendArp?.gain?.setValueAtTime(p.sendArp, ctx.currentTime);
     }
+    invalidateLeadGenerator();
   }
 
   // ==== UI bindings ====
@@ -1174,8 +1382,8 @@
   els.carrierWave.addEventListener('change', ()=>{ if(ctx){ carrierLeft.type=els.carrierWave.value; carrierRight.type=els.carrierWave.value; }});
   els.carrierGain.addEventListener('input', ()=>{ if(ctx) carrierGain.gain.setValueAtTime(parseFloat(els.carrierGain.value), ctx.currentTime); });
 
-  els.keySelect.addEventListener('change', e=> keyRoot = KEYS[e.target.value]);
-  els.scaleSelect.addEventListener('change', e=> scaleName = e.target.value);
+  els.keySelect.addEventListener('change', e=>{ keyRoot = KEYS[e.target.value]; invalidateLeadGenerator(); });
+  els.scaleSelect.addEventListener('change', e=>{ scaleName = e.target.value; invalidateLeadGenerator(); });
   els.bassGain.addEventListener('input', ()=>{ if(ctx) bassBus.gain.setValueAtTime(parseFloat(els.bassGain.value), ctx.currentTime); });
   els.lpCutoff.addEventListener('input', ()=>{ if(ctx) bassLP.frequency.setValueAtTime(parseFloat(els.lpCutoff.value), ctx.currentTime); });
   els.bassWave.addEventListener('change', ()=>{}); els.bassOct.addEventListener('input', ()=>{});
@@ -1207,7 +1415,8 @@
   els.leadToggle.addEventListener('change', ()=>{ updateLeadControls(); });
   els.leadGain.addEventListener('input', ()=>{ if(ctx && leadBus) leadBus.gain.setValueAtTime(parseFloat(els.leadGain.value), ctx.currentTime); });
   els.leadWave.addEventListener('change', ()=>{});
-  els.leadOct.addEventListener('input', ()=>{});
+  if (els.leadMode) els.leadMode.addEventListener('change', handleLeadModeChange);
+  els.leadOct.addEventListener('input', ()=>{ invalidateLeadGenerator(); });
   els.leadRecord.addEventListener('click', (e)=>{ e.preventDefault(); if (els.leadRecord.disabled) return; toggleLeadRecording(); });
   els.leadClear.addEventListener('click', (e)=>{ e.preventDefault(); if (els.leadClear.disabled) return; clearLeadBuffer(); });
 
