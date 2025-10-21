@@ -331,11 +331,15 @@
     space: Math.random() * 256,
     drums: Math.random() * 256,
     drumVel: Math.random() * 256,
+    drumSync: Math.random() * 256,
+    drumAccent: Math.random() * 256,
     leadDensity: Math.random() * 256,
     leadContour: Math.random() * 256,
     leadLength: Math.random() * 256,
     leadVelocity: Math.random() * 256,
     leadHarmony: Math.random() * 256,
+    leadGroove: Math.random() * 256,
+    leadAccent: Math.random() * 256,
   };
   const noise01 = (x,y,z) => (perlinNoise(x,y,z) + 1) * 0.5;
   function streamNoise(channel, beat, rate, y=0.4, z=0.7){
@@ -672,10 +676,19 @@
     const human = parseFloat(els.drumHuman.value);
     if (!human) return { time, velocity };
     const spread = human * 0.04;
-    const swing = (streamNoise('drums', step, 0.19, lane === 'hat' ? 0.82 : lane === 'snare' ? 0.44 : 0.26, lane === 'kick' ? 0.31 : 0.67) - 0.5) * spread;
+    const swingBase = streamNoise('drums', step, 0.19, lane === 'hat' ? 0.82 : lane === 'snare' ? 0.44 : 0.26, lane === 'kick' ? 0.31 : 0.67) - 0.5;
+    const swing = swingBase * spread;
+    const groovePhase = streamNoise('drumSync', step * 0.07 + (lane === 'hat' ? 0.93 : lane === 'snare' ? 1.71 : 0.37), 0.1, 0.63, lane === 'kick' ? 0.42 : 0.58) - 0.5;
+    const offbeat = (step % 2) === 1;
+    const syncShift = groovePhase * spread * (lane === 'hat' ? (offbeat ? 1.4 : 0.6) : lane === 'snare' ? 0.8 : 0.45);
+    const pushPull = lane !== 'kick'
+      ? (streamNoise('drumSync', step * 0.11 + 6.1, 0.09, lane === 'hat' ? 0.51 : 0.37, 0.71) - 0.5) * spread * 0.45
+      : 0;
     const velDelta = (streamNoise('drumVel', step, 0.27, lane === 'hat' ? 0.55 : lane === 'snare' ? 0.72 : 0.34, lane === 'kick' ? 0.61 : 0.83) - 0.5) * (human * 0.5);
-    const t = Math.max(time + swing, ctx.currentTime + 0.0003);
-    const v = clamp(velocity + velDelta, 0.05, 1.0);
+    const accent = streamNoise('drumAccent', step * 0.06 + (lane === 'hat' ? 2.5 : lane === 'snare' ? 1.2 : 0.4), 0.13, 0.57, 0.63) - 0.5;
+    const accentScale = 1 + accent * (0.35 + human * 0.25);
+    const t = Math.max(time + swing + syncShift + pushPull, ctx.currentTime + 0.0003);
+    const v = clamp(velocity * accentScale + velDelta, 0.05, 1.0);
     return { time: t, velocity: v };
   }
 
@@ -741,13 +754,26 @@
     src.stop(time + decay + 0.05);
   }
 
-  function regenerateDrumPatterns(){
+  function regenerateDrumPatterns(seedBeat=currentBeat){
     const steps = parseInt(els.drumLength.value, 10) || 16;
     drumPatternSteps = steps;
     const beats = Math.max(1, Math.floor(steps / DRUM_STEPS_PER_BEAT));
     const density = clamp(parseFloat(els.drumDensity.value) || 0, 0, 1);
     const fillChance = clamp(parseFloat(els.drumFill.value) || 0, 0, 1);
     const fillActive = Math.random() < fillChance;
+
+    const section = Math.max(0, Math.floor((seedBeat || 0) / 16));
+    const sectionRoot = section * 0.71 + 1.1;
+    const syncFeel = streamNoise('drumSync', sectionRoot, 0.07, 0.68, 0.52);
+    const accentFeel = streamNoise('drumAccent', sectionRoot + 2.4, 0.08, 0.54, 0.77);
+    const hatFeel = streamNoise('drumSync', sectionRoot + 4.7, 0.05, 0.61, 0.83);
+    const wantsBrokenBeat = syncFeel > 0.6;
+    const wantsHalfTime = syncFeel < 0.24 && beats >= 4;
+    const wantsStutter = accentFeel > 0.74;
+    const hatTriplet = hatFeel > 0.58;
+    const hatSkip = hatFeel < 0.28;
+    const ghostStrength = 0.25 + accentFeel * 0.35;
+    const accentMultiplier = 0.75 + accentFeel * 0.6;
 
     const kick = new Array(steps).fill(0);
     const snare = new Array(steps).fill(0);
@@ -760,22 +786,34 @@
     for (let beat = 0; beat < beats; beat++){
       const step = beat * DRUM_STEPS_PER_BEAT;
       const patternBeat = beat % 4;
+      const beatNoise = sectionRoot + beat * 0.43;
 
-      if (patternBeat === 0){
-        kick[step] = Math.max(kick[step], 0.95);
-        if (density > 0.25){
-          const ghost = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
-          kick[ghost] = Math.max(kick[ghost], 0.45 + density * 0.25);
-        }
-      } else if (patternBeat === 2){
-        kick[step] = Math.max(kick[step], 0.82);
-        if (density > 0.5){
-          const syncopated = (step + 1) % steps;
-          kick[syncopated] = Math.max(kick[syncopated], 0.5 + density * 0.3);
+      const kickAnchor = wantsHalfTime ? (patternBeat === 0 || patternBeat === 2) : (patternBeat === 0 || patternBeat === 2);
+      if (kickAnchor){
+        const basePower = patternBeat === 0 ? 0.96 : 0.82;
+        kick[step] = Math.max(kick[step], basePower);
+      }
+      if (!wantsHalfTime && patternBeat === 0 && density > 0.25){
+        const ghost = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
+        kick[ghost] = Math.max(kick[ghost], 0.45 + density * 0.25);
+      }
+      if (density > 0.48){
+        const syncIntensity = streamNoise('drumSync', beatNoise, 0.12, 0.79, 0.41);
+        if (syncIntensity > 0.52){
+          const syncOffset = (step + Math.round(DRUM_STEPS_PER_BEAT * (syncIntensity > 0.78 ? 1.5 : 0.75))) % steps;
+          kick[syncOffset] = Math.max(kick[syncOffset], 0.48 + density * 0.35);
         }
       }
 
-      if (patternBeat === 1 || patternBeat === 3){
+      if (wantsHalfTime){
+        if (patternBeat === 2){
+          snare[step] = Math.max(snare[step], 0.92);
+          if (density > 0.32){
+            const drag = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
+            snare[drag] = Math.max(snare[drag], 0.35 + ghostStrength * 0.25);
+          }
+        }
+      } else if (patternBeat === 1 || patternBeat === 3){
         const base = patternBeat === 1 ? 0.82 : 0.88;
         snare[step] = Math.max(snare[step], base);
         if (density > 0.45){
@@ -787,6 +825,15 @@
       if (density > 0.35 && patternBeat === 3){
         const openHatStep = (step + DRUM_STEPS_PER_BEAT - 1) % steps;
         hat[openHatStep] = Math.max(hat[openHatStep], 0.75);
+      }
+
+      if (wantsBrokenBeat){
+        const anticipation = (step + Math.round(DRUM_STEPS_PER_BEAT * 0.5)) % steps;
+        snare[anticipation] = Math.max(snare[anticipation], 0.32 + ghostStrength * 0.4);
+        if (density > 0.55){
+          const lateKick = (step + Math.round(DRUM_STEPS_PER_BEAT * 1.25)) % steps;
+          kick[lateKick] = Math.max(kick[lateKick], 0.5 + density * 0.28);
+        }
       }
     }
 
@@ -802,13 +849,49 @@
       hat[finalCrash] = Math.max(hat[finalCrash], 0.9);
     }
 
+    for (let i = 0; i < steps; i++){
+      const subStep = i % DRUM_STEPS_PER_BEAT;
+      const localBeat = Math.floor(i / DRUM_STEPS_PER_BEAT);
+      const hatAccentNoise = streamNoise('drumAccent', sectionRoot + i * 0.19, 0.17, 0.42, 0.68);
+      const dropNoise = streamNoise('drumSync', sectionRoot + i * 0.23 + 1.7, 0.12, 0.51, 0.44);
+      const accentBoost = 0.45 + hatAccentNoise * 0.4;
+      if (subStep === 0){
+        hat[i] = Math.max(hat[i], 0.5 + accentBoost * 0.5);
+      } else if (subStep === 2){
+        hat[i] = Math.max(hat[i], 0.42 + accentBoost * 0.35);
+      }
+      if (hatTriplet && subStep === 3){
+        const follow = (i + 1) % steps;
+        hat[follow] = Math.max(hat[follow], 0.52 + accentBoost * 0.28);
+      }
+      if (hatSkip && dropNoise < 0.36){
+        hat[i] = Math.min(hat[i], 0.18 + dropNoise * 0.22);
+      }
+      if (wantsStutter && subStep === 1){
+        const ghostIdx = (i + steps - 1) % steps;
+        snare[ghostIdx] = Math.max(snare[ghostIdx], ghostStrength * 0.6);
+      }
+      if (hatAccentNoise > 0.78){
+        const openTarget = (i + 1) % steps;
+        hat[openTarget] = Math.max(hat[openTarget], 0.82 + hatAccentNoise * 0.12);
+      }
+      const syncRake = streamNoise('drumSync', sectionRoot + localBeat * 0.31 + subStep * 0.51, 0.09, 0.45, 0.7);
+      if (syncRake > 0.64){
+        const accentIdx = (i + Math.round(DRUM_STEPS_PER_BEAT * 0.5)) % steps;
+        hat[accentIdx] = Math.max(hat[accentIdx], 0.58 + accentBoost * 0.3);
+      }
+      kick[i] = clamp(kick[i] * accentMultiplier, 0, 1);
+      snare[i] = clamp(snare[i] * accentMultiplier, 0, 1);
+      hat[i] = clamp(hat[i], 0, 1);
+    }
+
     drumPatterns = { kick, snare, hat };
     drumPatternNeedsUpdate = false;
   }
 
   function scheduleDrumSteps(baseTime, beatIndex){
     if (!ctx || !drumBus || !els.drumToggle.checked) return;
-    if (drumPatternNeedsUpdate || !drumPatterns) regenerateDrumPatterns();
+    if (drumPatternNeedsUpdate || !drumPatterns) regenerateDrumPatterns(beatIndex);
     if (!drumPatterns) return;
     const steps = drumPatternSteps || 16;
     const stepDuration = BEAT_SEC / DRUM_STEPS_PER_BEAT;
@@ -1041,16 +1124,36 @@
     return true;
   }
 
-  function scheduleGenerativeLead(baseTime, stepDuration){
+  function leadGrooveShape(globalStep){
+    const section = Math.max(0, Math.floor(globalStep / (LEAD_STEPS_PER_BEAT * 16)));
+    const sectionRoot = section * 0.57 + 3.2;
+    const localBeat = (globalStep / LEAD_STEPS_PER_BEAT) % 16;
+    const swingSample = streamNoise('leadGroove', sectionRoot + localBeat * 0.11, 0.08, 0.64, 0.55) - 0.5;
+    const syncSample = streamNoise('leadGroove', sectionRoot + globalStep * 0.07 + 5.1, 0.1, 0.53, 0.82) - 0.5;
+    const accentSample = streamNoise('leadAccent', sectionRoot + globalStep * 0.05, 0.14, 0.59, 0.41) - 0.5;
+    const sustainSample = streamNoise('leadGroove', sectionRoot + globalStep * 0.04 + 8.7, 0.16, 0.73, 0.38);
+    const offbeat = (globalStep % LEAD_STEPS_PER_BEAT) >= (LEAD_STEPS_PER_BEAT / 2);
+    const swingScale = offbeat ? 0.032 : 0.018;
+    const syncScale = 0.012 + section * 0.0015;
+    const timeOffset = clamp((swingSample * swingScale + syncSample * syncScale) * BEAT_SEC * (1.1 + section * 0.08), -0.045, 0.045);
+    const velocityMul = clamp(1 + accentSample * 0.42 + (offbeat ? 0.08 : 0), 0.65, 1.38);
+    const lengthMul = clamp(0.82 + sustainSample * 0.45 + (accentSample > 0.55 ? 0.08 : 0), 0.6, 1.35);
+    return { timeOffset, velocityMul, lengthMul };
+  }
+
+  function scheduleGenerativeLead(baseTime, stepDuration, beatIndex){
     if (leadGenState.mode !== 'generative') return;
     for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
       if (!ensureGenerativePhrase()) return;
       const idx = leadGenState.stepIndex;
       const events = leadGenState.phrase[idx] || [];
       if (events.length){
-        const time = baseTime + s * stepDuration;
+        const globalStep = beatIndex * LEAD_STEPS_PER_BEAT + s;
+        const groove = leadGrooveShape(globalStep);
+        const time = Math.max(baseTime + s * stepDuration + groove.timeOffset, ctx.currentTime + 0.0004);
         for (const ev of events){
-          scheduleLeadNote(time, ev.midi, ev.velocity, ev.length);
+          const lengthSteps = Math.max(1, Math.round(ev.length * groove.lengthMul));
+          scheduleLeadNote(time, ev.midi, ev.velocity * groove.velocityMul, lengthSteps);
         }
       }
       leadGenState.stepIndex++;
@@ -1074,20 +1177,23 @@
     o.start(t); o.stop(t+0.08);
   }
 
-  function scheduleLeadLoop(baseTime){
+  function scheduleLeadLoop(baseTime, beatIndex){
     if (!ctx || !leadBus || !leadState.enabled || !els.leadToggle.checked) return;
     const stepDuration = BEAT_SEC / LEAD_STEPS_PER_BEAT;
     if (leadGenState.mode === 'generative'){
-      scheduleGenerativeLead(baseTime, stepDuration);
+      scheduleGenerativeLead(baseTime, stepDuration, beatIndex);
       return;
     }
     for (let s = 0; s < LEAD_STEPS_PER_BEAT; s++){
       const stepIndex = (leadStepCursor + s) % LEAD_TOTAL_STEPS;
       const events = leadBuffer[stepIndex];
       if (events && events.length){
-        const time = baseTime + s * stepDuration;
+        const globalStep = beatIndex * LEAD_STEPS_PER_BEAT + s;
+        const groove = leadGrooveShape(globalStep);
+        const time = Math.max(baseTime + s * stepDuration + groove.timeOffset, ctx.currentTime + 0.0004);
         for (const ev of events){
-          scheduleLeadNote(time, ev.midi, ev.velocity, ev.length);
+          const lengthSteps = Math.max(1, Math.round(ev.length * groove.lengthMul));
+          scheduleLeadNote(time, ev.midi, ev.velocity * groove.velocityMul, lengthSteps);
         }
       }
     }
@@ -1256,7 +1362,7 @@
         scheduleArp(nextNoteTime + i*(BEAT_SEC/density)*0.98, subBeat); // slight pre-bias feels snappy
       }
 
-      scheduleLeadLoop(nextNoteTime);
+      scheduleLeadLoop(nextNoteTime, currentBeat);
 
       scheduleDrumSteps(nextNoteTime, currentBeat);
 
