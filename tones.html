@@ -237,6 +237,11 @@
     mixolydian:[0,2,4,5,7,9,10],
   };
   const TRIADS = [ [0,2,4], [1,3,5], [2,4,6], [3,5,0], [4,6,1], [5,0,2], [6,1,3] ];
+  const PAD_INVERSIONS = [
+    [[0,0],[1,0],[2,0]],
+    [[1,0],[2,0],[0,1]],
+    [[2,0],[0,1],[1,1]],
+  ];
   const PROG = { 0:[5,3,4,6], 1:[4,0,6], 2:[5,3,0], 3:[4,0,1], 4:[0,5], 5:[3,4,0], 6:[4,0] };
   const KEYBOARD_DEGREES = {
     z:0, x:1, c:2, v:3, b:4, n:5, m:6,
@@ -484,6 +489,23 @@
     brownian: createBrownianWalker((noiseSeed ^ 0xB135) >>> 0, { min: -3, max: 22, step: 1.08, damping: 0.17, velocityMax: 3.6 }),
   };
 
+  const motion = {
+    pad: createBrownianWalker((noiseSeed ^ 0xA51CE) >>> 0, { min: -0.6, max: 2.6, step: 0.7, damping: 0.18, velocityMax: 1.9 }),
+    arp: createBrownianWalker((noiseSeed ^ 0xC0DEF) >>> 0, { min: -0.8, max: 6.8, step: 1.15, damping: 0.19, velocityMax: 2.7 }),
+    bass: createBrownianWalker((noiseSeed ^ 0xDEED) >>> 0, { min: -0.6, max: 4.4, step: 0.92, damping: 0.17, velocityMax: 2.4 }),
+  };
+
+  const PAD_INVERSION_DEFAULT = 0;
+  let padInversionIndex = PAD_INVERSION_DEFAULT;
+  let lastPadChord = -1;
+
+  const BASS_WALKER_DEFAULT = 2;
+  let bassWalkerIndex = BASS_WALKER_DEFAULT;
+  let lastBassChord = -1;
+
+  const ARP_WALKER_DEFAULT = 2;
+  let arpWalkerIndex = ARP_WALKER_DEFAULT;
+
   const DRUM_STEPS_PER_BEAT = 4;
   let drumPatterns = null;
   let drumPatternSteps = 16;
@@ -629,11 +651,43 @@
     return c[idx];
   }
   function pickBassMidi(chordIndex, beat){
-    const triad = TRIADS[chordIndex];
-    const roll = streamNoise('bass', beat, 0.082, 0.28, 0.63);
-    const pick = roll < 0.5 ? triad[0] : (roll < 0.82 ? triad[2] : triad[1]);
+    const triad = TRIADS[chordIndex] || TRIADS[0];
+    const scaleLength = (SCALES[scaleName] || SCALES.major).length;
+    const bassChoices = [
+      (triad[0] ?? 0) - scaleLength,
+      (triad[2] ?? triad[0]) - scaleLength,
+      triad[0] ?? 0,
+      triad[2] ?? triad[0],
+      (triad[1] ?? triad[0]) + scaleLength,
+    ];
+    const walker = motion.bass;
+    if (walker){
+      if (!walker.initialized) walker.reset(bassWalkerIndex);
+      if (lastBassChord !== chordIndex){
+        bassWalkerIndex = BASS_WALKER_DEFAULT;
+        walker.snap(bassWalkerIndex);
+        lastBassChord = chordIndex;
+      }
+      const contour = streamNoise('bass', beat, 0.071, 0.52, 0.47) - 0.5;
+      const weight = streamNoise('bass', beat, 0.094, 0.31, 0.58) - 0.5;
+      const nextValue = walker.sample({ anchor: bassWalkerIndex + contour * 1.2, bias: 0.09, stepScale: 0.72, registerBias: weight * 0.05 - 0.04 });
+      const maxIndex = bassChoices.length - 1;
+      bassWalkerIndex = Math.max(0, Math.min(maxIndex, Math.round(nextValue)));
+    } else {
+      bassWalkerIndex = Math.max(0, Math.min(bassChoices.length - 1, bassWalkerIndex));
+    }
+
+    const leapNoise = streamNoise('bass', beat, 0.082, 0.28, 0.63);
+    if (leapNoise > 0.86){
+      const jump = leapNoise > 0.95 ? 2 : 1;
+      bassWalkerIndex = Math.min(bassChoices.length - 1, bassWalkerIndex + jump);
+    } else if (leapNoise < 0.14){
+      bassWalkerIndex = Math.max(0, bassWalkerIndex - 1);
+    }
+
+    let degree = bassChoices[bassWalkerIndex] ?? (triad[0] ?? 0);
     const octave = parseInt(els.bassOct.value,10);
-    let m = midiFromKeyScaleDegree(keyRoot, scaleName, pick, octave+1);
+    let m = midiFromKeyScaleDegree(keyRoot, scaleName, degree, octave+1);
     if (streamNoise('bass', beat, 0.018, 0.61, 0.48) < 0.18) m -= 12;
     while (m > 57) m -= 12;
     while (m < 40) m += 12;
@@ -645,23 +699,42 @@
   // pick an arpeggio MIDI: diatonic, avoid current bass pitch-class, upper register
   function pickArpMidi(chordIndex, beat){
     const degrees = [0,2,4,6,1,3,5];
-    const contour = streamNoise('arp', beat, 0.105, 0.44, 0.31);
-    let deg = degrees[Math.min(degrees.length-1, Math.floor(contour * degrees.length))];
-    const directional = streamNoise('arp', beat, 0.07, 0.88, 0.53);
+    const directional = streamNoise('arp', beat, 0.07, 0.88, 0.53) - 0.5;
+    const contour = streamNoise('arp', beat, 0.105, 0.44, 0.31) - 0.5;
+    const registerNoise = streamNoise('arp', beat, 0.052, 0.62, 0.91);
+    const walker = motion.arp;
+    if (walker){
+      if (!walker.initialized) walker.reset(arpWalkerIndex);
+      const anchor = arpWalkerIndex + directional * 1.35 + contour * 0.9;
+      const nextValue = walker.sample({ anchor, bias: 0.07, stepScale: 0.78, registerBias: (registerNoise - 0.5) * 0.12 + 0.05 });
+      const maxIndex = degrees.length - 1;
+      arpWalkerIndex = Math.max(0, Math.min(maxIndex, Math.round(nextValue)));
+    } else {
+      let baseIndex = Math.floor((contour + 0.5) * degrees.length);
+      baseIndex = Math.max(0, Math.min(degrees.length - 1, baseIndex));
+      arpWalkerIndex = baseIndex;
+    }
+
     if (lastArpMidi !== null){
-      const idx = degrees.indexOf(lastArpDegree);
-      if (idx >= 0){
-        if (directional > 0.66) deg = degrees[(idx + 1) % degrees.length];
-        else if (directional < 0.34) deg = degrees[(idx + degrees.length - 1) % degrees.length];
+      const prevIndex = degrees.indexOf(lastArpDegree);
+      if (prevIndex >= 0){
+        if (directional > 0.18 && arpWalkerIndex <= prevIndex){
+          arpWalkerIndex = Math.min(degrees.length - 1, prevIndex + 1);
+        } else if (directional < -0.18 && arpWalkerIndex >= prevIndex){
+          arpWalkerIndex = Math.max(0, prevIndex - 1);
+        }
       }
     }
-    // avoid sharing pitch class with bass
+
+    let deg = degrees[arpWalkerIndex];
     let tries = 0;
-    while ( ((keyRoot + SCALES[scaleName][deg%7]) % 12) === lastBassPitchClass && tries++ < 6 ){
-      deg = (deg + 2) % 7;
+    while (((keyRoot + SCALES[scaleName][deg % 7]) % 12) === lastBassPitchClass && tries++ < degrees.length){
+      arpWalkerIndex = (arpWalkerIndex + 2) % degrees.length;
+      deg = degrees[arpWalkerIndex];
     }
+
     let m = midiFromKeyScaleDegree(keyRoot, scaleName, deg, 5);
-    if (streamNoise('arp', beat, 0.052, 0.62, 0.91) > 0.7) m += 12;
+    if (registerNoise > 0.7) m += 12;
     lastArpMidi = m;
     lastArpDegree = deg;
     return m;
@@ -972,7 +1045,7 @@
     osc.start(t); osc.stop(t+0.35);
   }
 
-  function schedulePadChord(t, chordIndex){
+  function schedulePadChord(t, chordIndex, beat=currentBeat){
     if (!els.padToggle.checked || !ctx) return;
 
     // Ensure pad voices exist if the scheduler fires early
@@ -982,7 +1055,26 @@
       if (!padOscs || padOscs.length !== 3) return;
     }
 
-    const triad = TRIADS[chordIndex].map(d => midiFromKeyScaleDegree(keyRoot, scaleName, d, 3));
+    const baseTriad = TRIADS[chordIndex] || TRIADS[0];
+    const scaleLength = (SCALES[scaleName] || SCALES.major).length;
+    const walker = motion.pad;
+    if (walker){
+      if (!walker.initialized) walker.reset(padInversionIndex);
+      if (lastPadChord !== chordIndex){
+        padInversionIndex = PAD_INVERSION_DEFAULT;
+        walker.snap(padInversionIndex);
+        lastPadChord = chordIndex;
+      }
+      const drift = streamNoise('timbre', beat, 0.041, 0.48, 0.69) - 0.5;
+      const nextValue = walker.sample({ anchor: padInversionIndex + drift * 0.85, bias: 0.08, stepScale: 0.58 });
+      const maxIndex = PAD_INVERSIONS.length - 1;
+      padInversionIndex = Math.max(0, Math.min(maxIndex, Math.round(nextValue)));
+    }
+    const inversion = PAD_INVERSIONS[padInversionIndex] || PAD_INVERSIONS[0];
+    const triad = inversion.map(([idx, lift]) => {
+      const degree = (baseTriad[idx] ?? baseTriad[0]) + lift * scaleLength;
+      return midiFromKeyScaleDegree(keyRoot, scaleName, degree, 3);
+    });
     for (let i = 0; i < padOscs.length; i++) {
       const hz = Math.max(1, midiToFreq(triad[i]));
       const v = padOscs[i];
@@ -1408,7 +1500,7 @@
         (beatInBar === 12 && changeBias > 0.58);
       if (shouldChange){
         currentChord = nextChordIndex(currentChord, currentBeat);
-        schedulePadChord(nextNoteTime, currentChord);
+        schedulePadChord(nextNoteTime, currentChord, currentBeat);
       }
 
       // Bass each beat
@@ -1442,6 +1534,16 @@
     nextNoteTime = ctx.currentTime + 0.05;
     currentBeat = 0;
     transportStartTime = nextNoteTime;
+    padInversionIndex = PAD_INVERSION_DEFAULT;
+    lastPadChord = -1;
+    bassWalkerIndex = BASS_WALKER_DEFAULT;
+    lastBassChord = -1;
+    arpWalkerIndex = ARP_WALKER_DEFAULT;
+    motion.pad?.reset(padInversionIndex);
+    motion.bass?.reset(bassWalkerIndex);
+    motion.arp?.reset(arpWalkerIndex);
+    lastBassMidi = 40;
+    lastBassPitchClass = lastBassMidi % 12;
     lastArpMidi = null;
     lastArpDegree = 0;
     drumStepCounter = 0;
@@ -1469,6 +1571,11 @@
       transportStartTime = null;
       leadState.active.clear();
       resetLeadGenerator();
+      padInversionIndex = PAD_INVERSION_DEFAULT;
+      lastPadChord = -1;
+      bassWalkerIndex = BASS_WALKER_DEFAULT;
+      lastBassChord = -1;
+      arpWalkerIndex = ARP_WALKER_DEFAULT;
       updateLeadRecordUI(true);
       els.start.disabled = false;
       els.stop.disabled = true;
