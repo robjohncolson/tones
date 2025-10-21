@@ -346,6 +346,46 @@
     return noise01(noiseOffsets[channel] + beat * rate, y, z);
   }
 
+  function createBrownianWalker(seed, { min=-Infinity, max=Infinity, step=1, damping=0.16, velocityMax=3 } = {}){
+    const rng = mulberry32(seed);
+    let position = 0;
+    let velocity = 0;
+    let seeded = false;
+    const clampPos = v => clamp(v, min, max);
+    return {
+      reset(value=0){
+        position = clampPos(value);
+        velocity = 0;
+        seeded = true;
+      },
+      sample({ anchor=position, bias=0, stepScale=1, registerBias=0 } = {}){
+        if (!seeded) this.reset(anchor);
+        const random = (rng() - 0.5) * 2;
+        velocity += random * step * stepScale;
+        velocity += (anchor - position) * bias;
+        velocity += registerBias;
+        velocity *= (1 - damping);
+        velocity = clamp(velocity, -velocityMax, velocityMax);
+        position += velocity;
+        if (position < min){
+          position = min;
+          velocity = Math.abs(velocity) * 0.4;
+        } else if (position > max){
+          position = max;
+          velocity = -Math.abs(velocity) * 0.4;
+        }
+        return position;
+      },
+      snap(value){
+        position = clampPos(value);
+        velocity *= 0.35;
+        seeded = true;
+      },
+      get value(){ return position; },
+      get initialized(){ return seeded; }
+    };
+  }
+
   // ==== DOM ====
   const $ = sel => document.querySelector(sel);
   const els = {
@@ -441,6 +481,7 @@
     lastDegree: 0,
     sectionIndex: 0,
     noiseCursor: Math.random() * 512,
+    brownian: createBrownianWalker((noiseSeed ^ 0xB135) >>> 0, { min: -3, max: 22, step: 1.08, damping: 0.17, velocityMax: 3.6 }),
   };
 
   const DRUM_STEPS_PER_BEAT = 4;
@@ -998,12 +1039,18 @@
     leadGenState.sectionIndex = 0;
     leadGenState.lastDegree = TRIADS[currentChord]?.[0] ?? 0;
     leadGenState.noiseCursor = Math.random() * 512;
+    if (leadGenState.brownian){
+      leadGenState.brownian.reset(leadGenState.lastDegree);
+    }
   }
 
   function invalidateLeadGenerator(){
     leadGenState.phrase = [];
     leadGenState.steps = 0;
     leadGenState.stepIndex = 0;
+    if (leadGenState.brownian && Number.isFinite(leadGenState.lastDegree)){
+      leadGenState.brownian.snap(leadGenState.lastDegree);
+    }
   }
 
   function buildLeadPhrase(){
@@ -1021,6 +1068,10 @@
     const restTarget = restFloor + streamNoise('leadDensity', leadGenState.noiseCursor + section * 1.7 + 4.2, 0.015, 0.63, 0.32) * (restCeil - restFloor);
     const phraseRoot = leadGenState.noiseCursor + section * 11.7;
     let wroteNote = false;
+    const walker = leadGenState.brownian;
+    if (walker && !walker.initialized){
+      walker.reset(degree);
+    }
 
     for (let step = 0; step < steps;){
       const densitySample = streamNoise('leadDensity', phraseRoot + step * 0.21, 0.18, 0.52, 0.64);
@@ -1031,36 +1082,46 @@
       }
 
       const dirSample = streamNoise('leadContour', phraseRoot + step * 0.17, 0.12, 0.48, 0.79);
-      let direction = 0;
-      if (dirSample > 0.54) direction = 1;
-      else if (dirSample < 0.46) direction = -1;
-
       const magSample = streamNoise('leadContour', phraseRoot + step * 0.17 + 2.9, 0.1, 0.28, 0.93);
-      let magnitude;
-      if (magSample > 0.94) magnitude = 4;
-      else if (magSample > 0.82) magnitude = 3;
-      else if (magSample > 0.6) magnitude = 2;
-      else if (magSample > 0.38) magnitude = 1;
-      else magnitude = 0;
-
-      let targetDegree = degree + direction * magnitude;
       const leapSample = streamNoise('leadContour', phraseRoot + step * 0.13 + 8.4, 0.09, 0.69, 0.31);
-      if (leapSample > 0.88){
-        const leapDir = leapSample > 0.94 ? 1 : -1;
-        targetDegree = degree + leapDir * (leapSample > 0.97 ? 5 : 4);
-      }
-
       const chordBias = streamNoise('leadHarmony', phraseRoot + step * 0.18, 0.2, 0.57, 0.44);
+
+      let anchor = degree;
+      let anchorStrength = 0.04 + section * 0.012;
       if (chordBias > 0.7){
         const chordChoiceIdx = Math.floor(streamNoise('leadHarmony', phraseRoot + step * 0.18 + 5.1, 0.23, 0.63, 0.2) * chordDegrees.length) % chordDegrees.length;
         const chordDegree = chordDegrees[chordChoiceIdx];
-        const desiredOct = Math.round((targetDegree - chordDegree) / scaleSteps.length);
-        targetDegree = chordDegree + desiredOct * scaleSteps.length;
-      } else if (chordBias < 0.16){
+        const desiredOct = Math.round((degree - chordDegree) / scaleSteps.length);
+        anchor = chordDegree + desiredOct * scaleSteps.length;
+        anchorStrength += 0.08 + (chordBias - 0.7) * 0.18;
+      }
+
+      const contourPush = (dirSample - 0.5) * (0.32 + section * 0.015);
+      const stepScale = 0.55 + magSample * 1.1;
+      let rawDegree = degree + contourPush;
+      if (walker){
+        rawDegree = walker.sample({
+          anchor,
+          bias: anchorStrength,
+          stepScale,
+          registerBias: contourPush * 0.6
+        });
+      }
+
+      let targetDegree = Math.round(rawDegree);
+
+      if (chordBias < 0.16){
         targetDegree += chordBias < 0.08 ? -1 : 1;
       }
 
+      if (leapSample > 0.88){
+        const leapDir = leapSample > 0.94 ? 1 : -1;
+        const leapSize = leapSample > 0.97 ? 5 : 4;
+        targetDegree += leapDir * leapSize;
+      }
+
       targetDegree = clamp(targetDegree, -2, 18);
+      if (walker) walker.snap(targetDegree);
 
       const lengthSample = streamNoise('leadLength', phraseRoot + step * 0.23, 0.17, 0.73, 0.58);
       let lengthSteps = 1 + Math.floor(lengthSample * 3);
@@ -1087,6 +1148,7 @@
     }
 
     if (!wroteNote){
+      if (walker) walker.snap(degree);
       const fallbackMidi = midiFromKeyScaleDegree(keyRoot, scaleName, degree, octaveBase);
       pattern[0].push({ midi: fallbackMidi, length: Math.min(steps, 2), velocity: 0.72 });
     }
